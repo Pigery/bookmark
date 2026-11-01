@@ -2105,10 +2105,11 @@ function bindTrayDrag(el, node) {
     el.classList.add('dragging');
     beginDrag(e, node);
     /* 只有置顶栏里的图标才起「让位」预览；卡片里的图标拖出来是另一种语义 */
-    if (isPinned(node.id)) startTrayPreview(el);
+    if (isPinned(node.id)) startTrayPreview(el, e);
     e.stopPropagation();
   });
   el.addEventListener('dragend', () => {
+    /* 只是点了一下（没够到拖动阈值）就顺手把预览收回，别留下虚线框 */
     endTrayPreview();
     endDrag();
   });
@@ -2371,9 +2372,14 @@ async function setItemModeQuiet(node, mode) {
    别的格子跟着让位；松手时图标正好落进空槽，所见即所得。
    （拖拽过程中先由预览 CSS 控制，松手后 paintTray() 重绘成真实顺序。） */
 const TRAY_EDGE = 0.5;
-let trayLastIndex = 0;              // 指针当前对应的插入下标（0..n）
+let trayLastIndex = null;           // 指针当前对应的插入下标（去掉自己后的 0..n-1；null = 还没移动过）
 let traySourceEl = null;            // 被拖的那格（先藏起来当空槽的原位）
 let trayGhostEl = null;             // 跟着指针走的虚线空槽
+let trayDragStarted = false;        // 这一次算不算「真的在拖」（拖满 3px 才起预览）
+let trayStartX = 0;                 // 指针按下时在哪（3px 阈值用）
+let trayStartY = 0;
+let trayPrevEl = null;              // 被拖那格原来的左右邻居（判断有没有真的换位）
+let trayNextEl = null;
 
 function trayItemsOf(box) {
   return Array.from(box.querySelectorAll('.tray-app'));
@@ -2405,34 +2411,81 @@ function trayInsertAt(box, x, y) {
     const j = i + 1;
     if (x <= r.right - r.width * TRAY_EDGE || j >= rects.length || Math.abs(rects[j].top - r.top) > 4) return j;
     // 落在右半边但同行还有下一格 → 交给下一格判（下一格左半边 = 同一个位置）
-    i = j - 1;
-  }
+    i = j - 1;  }
   // 指针在行间空隙 / 上下留白：按最近的那一格算
   return best;
 }
 
 /* 让位：真格子保持 DOM 顺序（= state.icons 顺序），中间塞一个虚线的空槽；
-   下标 = 去掉空槽后的位置，正好就是「插到第几格」。 */
-function paintTrayPreview(at) {
+   「插到第几格」和 moveIcon(id, at) 的口径一致 —— 都是去掉被拖那格之后的下标。
+   注意：被拖的那格要留在 DOM 里（CSS 里它是透明的占位），不能从 append 列表里漏掉，
+   否则它会被挤到末尾 —— 之前「原地松手跑到末尾」就是这么来的。 */
+function paintTrayPreview(at, x, y) {
   const box = $('trayApps');
-  if (!box || !trayGhostEl) return;
-  const reals = trayItemsOf(box).filter((el) => el !== traySourceEl);
-  const idx = Math.max(0, Math.min(reals.length, at));
-  const seq = reals.slice();
-  seq.splice(idx, 0, trayGhostEl);
+  if (!box || !trayGhostEl || !traySourceEl) return;
+  const all = trayItemsOf(box);                 // 含被拖的那格
+  const reals = [];
+  for (let i = 0; i < all.length; i += 1) {
+    if (all[i] !== traySourceEl) reals.push(all[i]);
+  }
+  const idx = Math.max(0, Math.min(reals.length, at));   // 空槽该插到第几格（去掉自己之后）
+
+  /* 排 DOM 顺序：其余格子按原序，空槽插到第 idx 位，被拖那格放回它原来的序号位置。 */
+  let srcIndex = 0;                 // 被拖那格「在去掉自己后的列表里」的序号
+  {
+    let seen = 0;
+    let found = false;
+    for (let i = 0; i < all.length; i += 1) {
+      if (all[i] === traySourceEl) { srcIndex = seen; found = true; break; }
+      seen += 1;
+    }
+    if (!found) srcIndex = reals.length;
+  }
+  const seq = [];
+  for (let i = 0; i <= reals.length; i += 1) {
+    if (i === idx) seq.push(trayGhostEl);     // 空槽：插到第 idx 位
+    if (i === reals.length) break;
+    if (i === srcIndex) seq.push(traySourceEl);  // 被拖那格：还在原位（透明占位）
+    seq.push(reals[i]);
+  }
+  if (seq.indexOf(traySourceEl) < 0) seq.push(traySourceEl);
+
   // 顺序没变就别动 DOM（动一次会打断 hover / 触发重排闪一下）
-  const same = seq.length === box.children.length
-    && Array.from(box.children).every((el, i) => el === seq[i]);
-  if (!same) box.append(...seq);
+  let same = seq.length === box.children.length;
+  if (same) {
+    for (let i = 0; i < seq.length; i += 1) {
+      if (box.children[i] !== seq[i]) { same = false; break; }
+    }
+  }
+  if (!same) box.append.apply(box, seq);
   trayLastIndex = idx;
+  trayDragStarted = trayMovedFrom(seq, idx);
 
   // 高亮竖线：先画在空槽后面那一格的左边；后面没有格子就画在前面那格的右边
-  reals.forEach((el) => el.classList.remove('insert-before', 'insert-after'));
-  const prev = idx > 0 ? seq[idx - 1] : null;
-  const next = seq[idx + 1] || null;
-  if (next) next.classList.add('insert-before');
-  else if (prev) prev.classList.add('insert-after');
+  for (let i = 0; i < all.length; i += 1) all[i].classList.remove('insert-before', 'insert-after');
+  const ghostPos = seq.indexOf(trayGhostEl);
+  const prev = ghostPos > 0 ? seq[ghostPos - 1] : null;
+  const next = ghostPos + 1 < seq.length ? seq[ghostPos + 1] : null;
+  if (next && next !== traySourceEl) next.classList.add('insert-before');
+  else if (prev && prev !== traySourceEl) prev.classList.add('insert-after');
   box.classList.add('tray-sorting');
+}
+
+/* 这一次拖动是不是「换了位置」：空槽左右两侧的邻居和原来不一样，才算换位。
+   原来那对邻居是 (trayPrevEl, trayNextEl)；被拖那格自己就在旁边，
+   所以判断时要把它当成「已经摘掉」。没换位就当成点按：不写存储也不重绘。 */
+function trayMovedFrom(seq, idx) {
+  /* 空槽在 seq 里的真实下标要现查 —— seq 里还夹着被拖那格，不能直接拿 idx 当位置 */
+  const ghostPos = seq.indexOf(trayGhostEl);
+  if (ghostPos < 0) return false;
+  let prev = ghostPos > 0 ? seq[ghostPos - 1] : null;
+  let next = ghostPos + 1 < seq.length ? seq[ghostPos + 1] : null;
+  /* 邻居里夹着被拖那格时，往旁边再跨一格才是「真正的邻居」 */
+  if (prev === traySourceEl) prev = ghostPos - 2 >= 0 ? seq[ghostPos - 2] : null;
+  if (next === traySourceEl) next = ghostPos + 2 < seq.length ? seq[ghostPos + 2] : null;
+  const okPrev = prev === trayPrevEl;
+  const okNext = next === trayNextEl;
+  return !(okPrev && okNext);
 }
 
 function endTrayPreview() {
@@ -2443,14 +2496,21 @@ function endTrayPreview() {
   }
   if (trayGhostEl) { trayGhostEl.remove(); trayGhostEl = null; }
   if (traySourceEl) { traySourceEl.classList.remove('tray-lifted'); traySourceEl = null; }
+  trayPrevEl = null;
+  trayNextEl = null;
+  // trayLastIndex / trayDragStarted 留给 drop 用，下一次 startTrayPreview 再清
 }
 
 /* 按下时：被拖的格子就地留位（原尺寸的虚线空槽），图标本身变淡 */
-function startTrayPreview(el) {
+function startTrayPreview(el, e) {
   const box = $('trayApps');
   if (!box || !el || trayGhostEl) return;
   endTrayPreview();
   traySourceEl = el;
+  trayDragStarted = false;
+  trayLastIndex = null;
+  trayStartX = (e && e.clientX) || 0;
+  trayStartY = (e && e.clientY) || 0;
   /* 空槽做成和格子同尺寸的外壳：里面不放东西，只露虚线框 */
   const slot = document.createElement('div');
   slot.className = 'tray-ghost';
@@ -2458,6 +2518,10 @@ function startTrayPreview(el) {
   const r = el.getBoundingClientRect();
   slot.style.width = `${r.width}px`;
   slot.style.height = `${r.height}px`;
+  /* 记下它原来的左右邻居：用来判断「到底换没换位」。
+     （不靠 previousElementSibling，因为空槽马上要插进去，读到的就是空槽） */
+  trayPrevEl = el.previousElementSibling;
+  trayNextEl = el.nextElementSibling;
   trayGhostEl = slot;
   el.after(slot);
   el.classList.add('tray-lifted');
@@ -2472,10 +2536,15 @@ function bindTrayDrop() {
     if (!state.dragNode) return;
     if (!isPinned(state.dragNode.id)) return;
     if (!trayGhostEl) return;
+    /* 要拖满 3px 才算「真的在拖」：手不稳点一下也起不来虚线框，免得看着像能插 */
+    if (!trayDragStarted) {
+      if (Math.abs(e.clientX - trayStartX) < 3 && Math.abs(e.clientY - trayStartY) < 3) return;
+      trayDragStarted = true;
+    }
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
     if (!e.clientX && !e.clientY) return;         // 有些环境不给坐标，别把空槽扔到栏尾
-    paintTrayPreview(trayInsertAt(apps, e.clientX, e.clientY));
+    paintTrayPreview(trayInsertAt(apps, e.clientX, e.clientY), e.clientX, e.clientY);
   });
   document.addEventListener('drop', async (e) => {
     if (!state.dragNode) return;
@@ -2485,11 +2554,14 @@ function bindTrayDrop() {
     if (!pinned && !wasPreviewing) return;
     e.preventDefault();
     e.stopPropagation();
-    // 栏外松手：按最后一次算出来的下标插（默认栏尾）
+    /* 口径：trayLastIndex 已经是「去掉自己之后的下标」，和 moveIcon 内部一致。
+       null = 指针一次都没动过（原地松手）→ 什么都不做，绝不能退化成追加到末尾。 */
     const at = wasPreviewing ? trayLastIndex : null;
+    const moved = wasPreviewing ? trayDragStarted : true;
     endDrag();
     endTrayPreview();
     if (!pinned) return;
+    if (!moved || at == null) return;
     await moveIcon(srcId, at);
   });
 }
@@ -3221,7 +3293,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.6';
+    let ver = '2.0.7';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }
