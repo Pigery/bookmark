@@ -2104,9 +2104,14 @@ function bindTrayDrag(el, node) {
   el.addEventListener('dragstart', (e) => {
     el.classList.add('dragging');
     beginDrag(e, node);
+    /* 只有置顶栏里的图标才起「让位」预览；卡片里的图标拖出来是另一种语义 */
+    if (isPinned(node.id)) startTrayPreview(el);
     e.stopPropagation();
   });
-  el.addEventListener('dragend', endDrag);
+  el.addEventListener('dragend', () => {
+    endTrayPreview();
+    endDrag();
+  });
 }
 
 /* 卡片标题栏是把手：落到别的卡片左/右窄边 = 换位置，落到中间 = 挪进去 */
@@ -2360,50 +2365,133 @@ async function setItemModeQuiet(node, mode) {
   await storeSet('views', state.views);
 }
 
-/* 置顶图标拖到两个图标之间任意排序（不是两两互换） */
+/* ---------- 置顶栏拖拽：真的让位 ----------
+   以前只给落点那格加一根 3px 的线，拖的时候看不清「到底插不插得进去」。
+   现在从按下就开始：被拖的那格原地留一个虚线空槽，指针走到哪空槽就挪到哪，
+   别的格子跟着让位；松手时图标正好落进空槽，所见即所得。
+   （拖拽过程中先由预览 CSS 控制，松手后 paintTray() 重绘成真实顺序。） */
+const TRAY_EDGE = 0.5;
+let trayLastIndex = 0;              // 指针当前对应的插入下标（0..n）
+let traySourceEl = null;            // 被拖的那格（先藏起来当空槽的原位）
+let trayGhostEl = null;             // 跟着指针走的虚线空槽
+
+function trayItemsOf(box) {
+  return Array.from(box.querySelectorAll('.tray-app'));
+}
+
+/* 按指针位置算插入下标：落在某格左半 → 插到它前面，右半 → 插到它后面。
+   换行布局按「行」算，行尾右半不会被误算到下一行开头。 */
+function trayInsertAt(box, x, y) {
+  const items = trayItemsOf(box);
+  if (!items.length) return 0;
+  const rects = items.map((el) => el.getBoundingClientRect());
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < rects.length; i += 1) {
+    const r = rects[i];
+    const dx = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
+    const dy = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = x < r.left + r.width * TRAY_EDGE ? i : (x > r.right - r.width * TRAY_EDGE ? i + 1 : (x < r.left + r.width / 2 ? i : i + 1));
+    }
+  }
+  // 指针在某一格的行高范围内：只按这一行算，避免行尾右半被算到下一行开头
+  for (let i = 0; i < rects.length; i += 1) {
+    const r = rects[i];
+    if (y < r.top || y > r.bottom) continue;
+    if (x < r.left + r.width * TRAY_EDGE) return i;
+    const j = i + 1;
+    if (x <= r.right - r.width * TRAY_EDGE || j >= rects.length || Math.abs(rects[j].top - r.top) > 4) return j;
+    // 落在右半边但同行还有下一格 → 交给下一格判（下一格左半边 = 同一个位置）
+    i = j - 1;
+  }
+  // 指针在行间空隙 / 上下留白：按最近的那一格算
+  return best;
+}
+
+/* 让位：真格子保持 DOM 顺序（= state.icons 顺序），中间塞一个虚线的空槽；
+   下标 = 去掉空槽后的位置，正好就是「插到第几格」。 */
+function paintTrayPreview(at) {
+  const box = $('trayApps');
+  if (!box || !trayGhostEl) return;
+  const reals = trayItemsOf(box).filter((el) => el !== traySourceEl);
+  const idx = Math.max(0, Math.min(reals.length, at));
+  const seq = reals.slice();
+  seq.splice(idx, 0, trayGhostEl);
+  // 顺序没变就别动 DOM（动一次会打断 hover / 触发重排闪一下）
+  const same = seq.length === box.children.length
+    && Array.from(box.children).every((el, i) => el === seq[i]);
+  if (!same) box.append(...seq);
+  trayLastIndex = idx;
+
+  // 高亮竖线：先画在空槽后面那一格的左边；后面没有格子就画在前面那格的右边
+  reals.forEach((el) => el.classList.remove('insert-before', 'insert-after'));
+  const prev = idx > 0 ? seq[idx - 1] : null;
+  const next = seq[idx + 1] || null;
+  if (next) next.classList.add('insert-before');
+  else if (prev) prev.classList.add('insert-after');
+  box.classList.add('tray-sorting');
+}
+
+function endTrayPreview() {
+  const box = $('trayApps');
+  if (box) {
+    box.classList.remove('tray-sorting');
+    box.querySelectorAll('.tray-app').forEach((el) => el.classList.remove('insert-before', 'insert-after'));
+  }
+  if (trayGhostEl) { trayGhostEl.remove(); trayGhostEl = null; }
+  if (traySourceEl) { traySourceEl.classList.remove('tray-lifted'); traySourceEl = null; }
+}
+
+/* 按下时：被拖的格子就地留位（原尺寸的虚线空槽），图标本身变淡 */
+function startTrayPreview(el) {
+  const box = $('trayApps');
+  if (!box || !el || trayGhostEl) return;
+  endTrayPreview();
+  traySourceEl = el;
+  /* 空槽做成和格子同尺寸的外壳：里面不放东西，只露虚线框 */
+  const slot = document.createElement('div');
+  slot.className = 'tray-ghost';
+  slot.setAttribute('aria-hidden', 'true');
+  const r = el.getBoundingClientRect();
+  slot.style.width = `${r.width}px`;
+  slot.style.height = `${r.height}px`;
+  trayGhostEl = slot;
+  el.after(slot);
+  el.classList.add('tray-lifted');
+}
+
 function bindTrayDrop() {
   const apps = $('trayApps');
   if (!apps) return;
-  apps.addEventListener('dragover', (e) => {
+  /* 挂在 document 上：拖到栏外（搜索框、卡片区）指针不在容器里，
+     也照样算位置，不会「拖出去就没反应」。 */
+  document.addEventListener('dragover', (e) => {
     if (!state.dragNode) return;
+    if (!isPinned(state.dragNode.id)) return;
+    if (!trayGhostEl) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    const target = e.target.closest ? e.target.closest('.tray-app') : null;
-    apps.querySelectorAll('.tray-app').forEach((el) => el.classList.remove('insert-before', 'insert-after'));
-    if (!target || target.classList.contains('dragging')) return;
-    const r = target.getBoundingClientRect();
-    const before = e.clientX < r.left + r.width / 2;
-    target.classList.toggle('insert-before', before);
-    target.classList.toggle('insert-after', !before);
+    if (!e.clientX && !e.clientY) return;         // 有些环境不给坐标，别把空槽扔到栏尾
+    paintTrayPreview(trayInsertAt(apps, e.clientX, e.clientY));
   });
-  apps.addEventListener('dragleave', (e) => {
-    if (apps.contains(e.relatedTarget)) return;
-    apps.querySelectorAll('.tray-app').forEach((el) => el.classList.remove('insert-before', 'insert-after'));
-  });
-  apps.addEventListener('drop', async (e) => {
+  document.addEventListener('drop', async (e) => {
     if (!state.dragNode) return;
+    const srcId = state.dragNode.id;
+    const pinned = isPinned(srcId);
+    const wasPreviewing = !!trayGhostEl;
+    if (!pinned && !wasPreviewing) return;
     e.preventDefault();
     e.stopPropagation();
-    const srcId = state.dragNode.id;
-    const target = e.target.closest ? e.target.closest('.tray-app') : null;
-    let at = null;
-    if (target) {
-      const before = target.classList.contains('insert-before');
-      at = trayIndexOf(target.dataset.fid, before ? 0 : 1);
-    }
+    // 栏外松手：按最后一次算出来的下标插（默认栏尾）
+    const at = wasPreviewing ? trayLastIndex : null;
     endDrag();
-    if (!isPinned(srcId)) return;
+    endTrayPreview();
+    if (!pinned) return;
     await moveIcon(srcId, at);
   });
-}
-
-function trayIndexOf(fid, offset) {
-  const list = state.icons || [];
-  for (let i = 0; i < list.length; i += 1) {
-    const n = resolveIconEntry(list[i]);
-    if (n && hexId(n.id) === fid) return i + offset;
-  }
-  return null;
 }
 
 function isPinned(id) {
@@ -3133,7 +3221,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.5';
+    let ver = '2.0.6';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }

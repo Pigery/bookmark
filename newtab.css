@@ -440,13 +440,37 @@ body[data-light="1"] .bg-grain {
 }
 .tray-app.dragging { opacity: 0.4; }
 .tray-app.drop-target { background: var(--accent-soft); }
-/* 拖动排序时插到哪两条之间的提示线（v1.8） */
+
+/* ---------- 置顶栏拖拽：真的让位（v2.0.6） ----------
+   被拖的那格原地留位（.tray-lifted，占着位但看不见），
+   虚线空槽（.tray-ghost）就是插入位：指针走到哪它挪到哪，别的格子跟着让。
+   宽度和格子一样（72 含边框，box-sizing: border-box），
+   虚线框贴着格子外沿画，进来时淡一下，不抖动。 */
+.tray-ghost {
+  position: relative;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 72px;
+  border-radius: var(--r-sheet);
+  border: 2px dashed color-mix(in srgb, var(--accent) 78%, #fff);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
+  animation: trayGhostIn 0.14s var(--ease);
+}
+@keyframes trayGhostIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.tray-sorting .tray-app { transition: transform 0.12s var(--ease), background 0.16s var(--ease); }
+.tray-app.tray-lifted { opacity: 0.001; }
+
+/* 拖动排序时插到哪两条之间的提示线（v1.8，v2.0.6 起加粗加长） */
 .tray-app.mark-before::after,
 .tray-app.mark-after::after {
   content: '';
   position: absolute;
-  top: 2px;
-  bottom: 2px;
+  top: 4px;
+  bottom: 4px;
   width: 3px;
   border-radius: 2px;
   background: var(--accent);
