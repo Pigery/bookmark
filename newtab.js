@@ -1470,30 +1470,42 @@ function buildZone(node, opts) {
   }
 
   if (items.length) {
-    /* 「未分组」这种合成卡的 id 是 `__loose__:1` 这种假 id，
-       folderModeInherit() 沿 parentId 往上走永远走不到它 —— 于是点了卡片上的
-       「图标显示」，外框变了，里面每条书签仍掉回 inferMode 判成列表。
-       这里让合成卡里的书签跟随这张卡：卡是图标就全图标，卡是列表就全列表。
-       单条书签自己设过的仍然优先（modeOf 的第一步就是查 views.items）。 */
+    /* 一张卡里可以同时有图标和列表：每条书签各按自己的显示方式决定怎么画，
+       再把「连续的同类」归成一段（图标一段用 tile-band，列表一段用 zone-grid），
+       从上往下依次排在卡片体里。
+       合成卡（「未分组」）的 id 是 `__loose__:1` 这种假 id，folderModeInherit()
+       沿 parentId 走真实树永远走不到它，所以合成卡里的书签改成跟随这张卡：
+       卡是图标就按图标、卡是列表就按列表。单条书签自己设过的始终优先。 */
     const zoneMode = modeOf(node);
     const looseKey = node.id ? String(node.id).startsWith('__loose__:') : false;
-    const pick = (it) => {
+    const modeFor = (it) => {
       const own = state.views.items[it.id];
       if (isMode(own)) return own;
       return looseKey ? zoneMode : modeOf(it);
     };
-    const listMode = pick(items[0]) === MODE_LIST;
-    if (listMode) {
-      const grid = document.createElement('div');
-      grid.className = 'zone-grid';
-      items.forEach((it) => grid.appendChild(buildItem(it)));
-      body.appendChild(grid);
-    } else {
-      const band = document.createElement('div');
-      band.className = 'tile-band';
-      items.forEach((it) => band.appendChild(buildTile(it)));
-      body.appendChild(band);
-    }
+
+    /* 相邻且同模式的归成一段，段与段之间不断开顺序 */
+    const runs = [];
+    items.forEach((it) => {
+      const m = modeFor(it);
+      const last = runs[runs.length - 1];
+      if (last && last.mode === m) last.nodes.push(it);
+      else runs.push({ mode: m, nodes: [it] });
+    });
+
+    runs.forEach((run) => {
+      if (run.mode === MODE_LIST) {
+        const grid = document.createElement('div');
+        grid.className = 'zone-grid';
+        run.nodes.forEach((it) => grid.appendChild(buildItem(it)));
+        body.appendChild(grid);
+      } else {
+        const band = document.createElement('div');
+        band.className = 'tile-band';
+        run.nodes.forEach((it) => band.appendChild(buildTile(it)));
+        body.appendChild(band);
+      }
+    });
   }
 
   if (empty) {
@@ -2991,7 +3003,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.2';
+    let ver = '2.0.3';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }

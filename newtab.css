@@ -672,7 +672,12 @@ body[data-light="1"] .empty::before {
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
+  /* 图标段和列表段会在同一张卡里交替出现，段之间留一点呼吸，
+     不要只靠各自的 padding 硬贴在一起 */
+  gap: 2px;
 }
+.zone-body > .tile-band + .zone-grid,
+.zone-body > .zone-grid + .tile-band { margin-top: 4px; }
 .zone-grid {
   flex: 0 0 auto;
 }
