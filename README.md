@@ -2,6 +2,8 @@
 
 一个接管浏览器新标签页的书签面板：**书签栏的每个文件夹 = 一张横向铺开的卡片**，点卡片平滑放大、逐级进入子文件夹；顶部有时钟和多引擎搜索框，右上角可换壁纸；书签还能「置顶」到时钟下方，变成一排像桌面 App 一样的图标。
 
+> **当前版本 v3.0.0：工程换成 TypeScript + Vite + React + shadcn/ui + Tailwind，界面与行为 1:1 不变。** 扩展目录也从根目录换成了构建产物 `dist/`，先看[技术栈迁移](#技术栈迁移typescript--vite--reactv300)再动手。
+
 在 v1.4.0 的「文件夹卡片 + 放大下钻」主体上，增量增加了：**多引擎搜索、必应每日壁纸、把书签置顶成 App 图标横栏**。v1.6.0 起，每个书签和文件夹还能单独选「图标 / 列表」显示方式，没设定的按站点性质自动判断。v1.7.0 起，书签和文件夹都能**直接拖到别的文件夹里**，不用先进去再拖；v1.7.1 起，搜索框回车一律走搜索引擎；v1.8.0 起，置顶图标栏的图标能拖到任意位置排序（不是两两互换）；v1.8.1 起，所有滚动区统一换成细胶囊滚动条；v1.9.0 起，桌面上的一级分组卡片也能拖动调整先后；v1.10.0 起，放大后的文件夹是固定大小，内容再多也在卡片里滚动，翻文件夹时不再忽大忽小。v1.11.0 起布局可以导出 / 导入 / 生成分享文本，**纯离线**，不登录任何账号、不依赖任何服务；v1.15.0 起必应照片壁纸可以加高斯模糊，照片只当背景氛围；v1.16.0 起布局文件可以直接拖到页面上导入；v1.17.0 做了一次整体视觉改版，界面语言统一成「**灯箱相纸**」：白纸卡片 + 玻璃顶栏，详见[视觉改版](#视觉改版v1170)；v1.17.1 修掉「拖图标 / 拖链接被误当成导入布局」的问题，详见[拖拽的边界](#拖拽的边界v1171-修正)；v1.17.2 给置顶图标的右键菜单补上「取消置顶」；v1.18.0 按评审结果修了一轮可用性：**键盘能走完整个页面**、放大层有了常驻出口、右上角能查快捷键，同时把字号 / 字重 / 圆角收成刻度、灰字提亮、菜单和弹层改成半透明薄片，详见[这一版的可用性修正](#这一版的可用性修正v1180)；v1.18.1 把卡片从纯白改成带暖光与压痕的象牙纸，详见[纸的颜色](#纸的颜色v1181)；v1.19.0 卡片会从壁纸里**借一点颜色**（v1.20.5 起同时借色相、彩度和一点点透光），详见[纸跟着壁纸走](#纸跟着壁纸走v1190--v1205-重做)；v1.20.0 必应壁纸可以手动挑了：面板里能看到最近 8 天，点哪天用哪天，「用今天的」随时一键回切，详见[必应壁纸的挑法](#必应壁纸的挑法v1200)；v1.20.1 修了「画廊只显示今天」——必应接口参数不认时自动换参数、逐天去要，拿不到的往期从缓存里补；v1.20.2 把画廊改成 **3×3 九宫格**：取今天 + 往前 8 天正好 9 张，格数和天数对齐，不留半行；v1.20.3 给必应壁纸缓存加了天数指纹，升级后不会再拿着旧的 8 张图硬撑 6 小时；v1.20.4 修「九宫格只有 8 张」——必应把 `n` 的上限卡在 8，返回不满 9 张时改走逐天补齐；v1.20.5 重做了纸的取色：彩度、明度、透光三层一起调，卡片终于能看出「贴着哪张壁纸」，详见[纸跟着壁纸走](#纸跟着壁纸走v1190--v1205-重做)；v1.20.6 修 `$ is not defined`——上一版重写取色时误删了文件头的公共工具层（`$` 与文件头目录注释），补回并加了顶层调用顺序检查；v1.20.7 重建 `newtab.js` 的公共层与渲染主体（`$ / storeGet / storeSet / toast`、`WALLPAPERS`、`HAS_CHROME`、`WALL_BLURS`、`ENGINES` 等此前一并丢失的定义全部补回），并把所有事件绑定收进 `bindUI()`，在定义全部完成后统一挂载。
 
 **v2.0.0 是一次全量重写**：`newtab.js` 从零重写（约 3000 行），此前 v1.4 – v1.21 的每一项功能都按原行为逐条搬回来，行为对照见下面的[功能清单](#功能)。同时补上了此前缺失的四条样式（`.crumb-sep` / `.sync-hint` / `.modal-input` / `body.kb-mode`），引入 git 做版本管理，并加了一套能真跑的回归测试（见[测试](#测试)）。
@@ -168,31 +170,101 @@ group(tiles); group(lists);
 
 验证：这轮在临时目录搭了 Playwright（chromium 跑 `file://` 预览页）+ 假 `chrome.bookmarks`，用真鼠标拖拽跑 17 项断言全绿 —— 包括「本卡空白不移动」「卡片间空隙不移动」「左半边插入线 + 顺序正确」「跨卡点蓝并挪进去」「卡片窄边换位」「文件夹拖进卡片」「悬停自己不提示」。注意：拖拽期间 Playwright 的 `evaluate` 可能先于输入事件返回，**「悬停时的 class」必须轮询采样或用合成 DragEvent**，取一次快照会得到假阴性。
 
+## 技术栈迁移：TypeScript + Vite + React（v3.0.0）
+
+v2.1.0 是最后一代「一个 `newtab.js` 三千行 + 一个 `newtab.css` 两千行」的写法。文件太大之后，改一处拖拽要滚 800 行才找得到第二个相关函数，v2.1.0 里「拖到空白处会被扔到末尾」那类 bug 就是这么漏掉的。v3.0.0 把工程换成 **TypeScript + Vite + React + shadcn/ui + Tailwind**，但**前提是像素和行为一模一样**：不是重做界面，是搬家。
+
+### 搬家的规矩：保形移植，不是重写
+
+`state` 仍然是**那一个可变对象**（字段和老版本一一对应：`wallpaper / wallBlur / engine / wallpaperBing / bingList / bingDay / icons / views / tree / byId / bar / path / query / zoom / dragNode`），改完调 `bump()` 通知订阅者重渲染 —— 它就是老 `render()` 的位置。组件渲染出来的 **class 名、DOM 顺序、内联样式**与老 `newtab.html` 逐字对齐，样式仍然由老 CSS 负责（`app/src/styles/legacy.css` 是 `newtab.css` 的**逐字副本**，`cmp` 过字节一致），Tailwind 只管新东西（shadcn 组件），且 **`preflight` 关掉**，否则它会把老 CSS 依赖的 `*{margin:0;padding:0}` 洗掉。
+
+原因是老逻辑全是命令式 DOM 拼装（`buildZone()` 里先塞子文件夹、再把「连续的同类」切成 `tile-band` / `zone-grid` 段），一旦改写成纯 React 状态推导，判定顺序就会变，像素必然漂 —— 而这次的要求是「不能少、不能改」。
+
+### 目录
+
+```
+书签/
+├── app/                        v3.0.0 源码
+│   ├── newtab.html             入口（只有一个 #root）
+│   ├── public/                 manifest.json + icons/（原样复制）
+│   └── src/
+│       ├── main.tsx  App.tsx   挂载与整页装配（背景层 / 顶栏 / 舞台 / 置顶栏 / 放大层 / 各面板）
+│       ├── index.css           legacy.css → tailwind 三层 → shadcn 变量
+│       ├── styles/legacy.css   newtab.css 的逐字副本
+│       ├── components/         topbar / board（卡片、格子、子文件夹、放大层）/ panels / shell / ui
+│       └── lib/                chrome 封装、store（state+bump）、tree、drag、menus、keys、tint、wallpaper、sync、bing、actions
+├── dist/                       构建产物 = 灌进浏览器的那个「已解压扩展」
+├── package.json  vite.config.ts  tsconfig.json  tailwind.config.ts
+├── newtab.html / newtab.css / newtab.js / icons/    v2.1.0 老版本，保留作对照基线
+└── README.md
+```
+
+### 命令
+
+```powershell
+pnpm install          # 第一次
+pnpm dev              # 开发服务器：http://localhost:5173/newtab.html（注意是 localhost，不是 127.0.0.1）
+pnpm build            # tsc -b 类型检查 + 打包 → dist/
+```
+
+`vite.config.ts` 里有两处为了「和老版本一样能双击 `newtab.html` 预览」做的特殊处理：`root: 'app'`（源码在子里目录）、以及把产物打成 **IIFE 单文件**（`assets/newtab.js`）并把 `<script type="module">` 改写成 `<script defer>` —— `file://` 下 ES module 会被 CORS 直接拦死，老版本「双击即预览」这条能力不能丢。
+
+### 怎么确认「真的一样」
+
+不靠眼睛看顺序，靠脚本比对。临时目录里搭了 Playwright（chromium），**同一份假 `chrome.*` fixture** 分别灌进老页面（`file:///…/newtab.html`）和新页面（`localhost:5173` 或 `dist/newtab.html`），然后逐项取 `getBoundingClientRect` + `getComputedStyle` 深比对：
+
+| 脚本 | 覆盖 |
+| --- | --- |
+| `cmp.mjs` | 首屏静态像素：13 组选择器的 rect / 背景 / 字号 / 圆角 / 水印 |
+| `parity.mjs` | 放大层、书签右键、卡片空白右键、壁纸面板、帮助卡、引擎菜单、搜索、无命中空态、面包屑 |
+| `parity-deep.mjs` | 子文件夹行、分区标签、图标段/列表段数量、进子文件夹、Backspace 返回、Esc、`/` 聚焦 |
+| `parity-sync.mjs` | 同步面板（分享文本、粘贴预览、乱码错误态、Esc） |
+| `parity-drop.mjs` | 拖外部链接进卡片、拖布局文件、`dragleave` 收提示 |
+| `parity-crud.mjs` | 新建分组 / 新建书签 / 重命名 / 删除 / 置顶 / 切显示方式（比对 `chrome.bookmarks.*` 的调用参数） |
+| `parity-persist.mjs` | 刷新之后：引擎、壁纸、置顶、显示方式 |
+| `parity-tray.mjs` | 置顶栏真鼠标拖动排序 |
+| `verify2.mjs --new` | v2.1.0 那 17 项拖拽断言，原样套在新实现上 |
+
+结论：**除了下面两处「老代码里的死代码被补完」，其余全部一致。**
+
+### 只有两处不一致，都是**故意的**
+
+1. **提示气泡以前根本看不见。** 老 `toast()` 只给 `#toast` 加 `.on` 类、从不去掉 `hidden`，而 CSS 里 `[hidden]{display:none!important}` —— 所以「已置顶 / 已新建 / 已删除」这些提示一直是哑的（代码在，屏幕上从来没有）。新实现照样式表里本来就写好的 `.toast` 规则把它显示出来了。不想要的话，把 `app/src/components/shell/small.tsx` 里 `Toast` 的 `hidden` 改回去即可。
+2. **布局同步的「确认覆盖」以前是死代码。** 老 `newtab.js:3195` 的点击处理器只认 `.sync-apply-go`，而 `renderSyncPreview()` 从来不生成这个按钮，`newtab.css:1541` 却留着 `.sync-preview .sync-confirm` 的样式 —— 等于「导入了别人的布局但本机有内容」这条分支根本走不下去。新实现按那套样式补了「确认覆盖」按钮，流程才闭环。
+
+其余一切（包括 toast 的文案、菜单项的排列、拖拽的插入线阈值 `ITEM_EDGE 0.5` / `ZONE_EDGE 0.28`（上限 130px）/ `FOLDER_EDGE 0.3`、`__loose__:` 虚拟卡的接法、必应九宫格的取图与缓存指纹、取色三层的常量）都是逐行搬过来的。
+
 ## 安装
 
-1. 打开 `chrome://extensions`（Edge 用 `edge://extensions`）
-2. 右上角开启 **开发者模式**
-3. 点 **加载已解压的扩展程序**，选择这个文件夹
-4. 新开一个标签页即可
+**v3.0.0 起扩展目录换成 `dist/`**（根目录的 `newtab.html/js/css` 是 v2.1.0 老版本，留作对照，别拿它加载）。
+
+1. 先构建：在本目录跑 `pnpm install`（首次）然后 `pnpm build`
+2. 打开 `chrome://extensions`（Edge 用 `edge://extensions`）
+3. 右上角开启 **开发者模式**
+4. 点 **加载已解压的扩展程序**，选择 **`dist`** 文件夹
+5. 新开一个标签页即可
 
 > 如果新标签页没有变化，检查是否还有别的扩展也在接管新标签页，停用其中一个即可。
 
 ## 改了代码怎么生效（重要）
 
-这是**已解压**的扩展，没有"打包"这一步，但浏览器不会自动感知文件变化：
+v3.0.0 起要先构建，再让浏览器重载 `dist/`：
 
-1. 打开 `chrome://extensions`，找到本扩展，点卡片上的 **刷新图标**（↻）
-2. **关掉所有已打开的新标签页**，再按 `Ctrl+T` 新开一个
-3. 仍然不变就 `Ctrl+Shift+R` 强制刷新，或移除后重新「加载已解压的扩展程序」
+1. 改 `app/src/**` 下的文件（或跑 `pnpm dev` 在 `http://localhost:5173/newtab.html` 里边改边看）
+2. `pnpm build`（先 `tsc -b` 类型检查，再打包到 `dist/`）
+3. 打开 `chrome://extensions`，找到本扩展，点卡片上的 **刷新图标**（↻）
+4. **关掉所有已打开的新标签页**，再按 `Ctrl+T` 新开一个
+5. 仍然不变就 `Ctrl+Shift+R` 强制刷新，或移除后重新「加载已解压的扩展程序」并选 `dist`
 
-页面左下角有水印，形如 `v2.1.0 · 扩展`，用它确认生效情况：
+页面左下角有水印，形如 `v3.0.0 · 扩展`，用它确认生效情况：
 
 | 水印显示 | 含义 |
 | --- | --- |
-| `v2.1.0 · 扩展` | 新版已生效 |
+| `v3.0.0 · 扩展` | 新版（React 版）已生效 |
+| `v3.0.0 · 预览` | 直接双击 `dist/newtab.html`（非扩展），预览模式，数据存 localStorage |
+| `v2.1.0 · 扩展` | 浏览器还挂载着根目录那份老版本 → 换个目录，改成 `dist` |
 | `v2.0.x · 扩展` | 浏览器还在跑旧代码 → 重载扩展 |
 | `v1.x.x · 扩展` | 浏览器还在跑旧代码 → 重载扩展 |
-| `v2.1.0 · 预览` | 你是直接用浏览器打开 `newtab.html`（非扩展），预览模式，数据存 localStorage |
 
 ## 功能
 
@@ -417,15 +489,26 @@ const TINT_A_MAX = 0.62;    // 渐层的透明度上限
 
 ## 测试
 
-改动前后都跑一遍，两条命令，都在扩展目录下执行（脚本本身放在系统临时目录，**不要**写进扩展目录，见下面的[工作纪律](#工作纪律)）：
+**v3.0.0（React 版）**：类型检查已经并进构建，所以先跑 `pnpm build`；行为靠 Playwright 比对（脚本在系统临时目录，见下面的[工作纪律](#工作纪律)）：
 
 ```powershell
-node --check newtab.js                                    # 1. 语法
-node "$env:TEMP\bd_check.js" "C:\Users\76909\Desktop\书签"  # 2. 静态三连：未定义标识符 / 顶层调用顺序 / 类名↔CSS
-node "$env:TEMP\bd_unit.js"  "C:\Users\76909\Desktop\书签"  # 3. 功能单测（17 项）
+pnpm build                                              # tsc -b 类型检查 + 打包
+node "$env:TEMP\pw\cmp.mjs"                             # 首屏像素深比对（老 file:// vs 新 dev/dist）
+node "$env:TEMP\pw\parity.mjs"                          # 交互态：放大层/右键/面板/引擎菜单/搜索
+node "$env:TEMP\pw\parity-deep.mjs"                     # 子文件夹/分区标签/进目录/键盘
+node "$env:TEMP\pw\parity-sync.mjs"                     # 同步面板
+node "$env:TEMP\pw\parity-drop.mjs"                     # 拖外部链接 / 拖布局文件
+node "$env:TEMP\pw\parity-crud.mjs"                     # 新建/重命名/删除/置顶/显示方式
+node "$env:TEMP\pw\parity-persist.mjs"                  # 刷新后设置还在
+node "$env:TEMP\pw\parity-tray.mjs"                     # 置顶栏拖动
+node "$env:TEMP\pw\verify2.mjs" --new                   # v2.1.0 的 17 项拖拽断言
 ```
 
-单测的做法值得记一下：本机 Edge 的 headless 在沙箱里起不来、截不到图，所以不去假装有浏览器 —— 直接把 `newtab.js` 全文读进 `vm`，套一套假的 `document` / `chrome.storage` / `Image`，**真跑真断言**。覆盖的是纯逻辑那部分：`normUrl` 规范化、`buildLayout` / `resolveLayout` 的跨设备往返、`packLayout` / `unpackLayout` 的 gzip 往返、存储封装、取色（`analyzeThumb` → `paperTintVars`）、转义、搜索命中、`isSelfOrDescendant` 防成环。界面像素它证明不了，那部分只能靠人眼看。
+两个坑记一下：**React 受控组件必须用 `page.fill()`**（直接改 `.value` 会被 valueTracker 认为没变，白改）；**拖拽期间 Playwright 的 `evaluate` 可能先于输入事件返回**，「悬停时的 class」要轮询采样或用合成 `DragEvent`，取一次快照会得到假阴性。
+
+**v2.1.0 及以前（老版本）**：`node --check newtab.js` 语法 + `$env:TEMP\bd_check.js`（未定义标识符 / 顶层调用顺序 / 类名↔CSS 三连）+ `$env:TEMP\bd_unit.js`（17 项功能单测）。这两个脚本的做法是把 `newtab.js` 全文读进 `vm`、套假 `document` / `chrome.storage` / `Image` 真跑真断言 —— 覆盖纯逻辑（`normUrl` 规范化、`buildLayout`/`resolveLayout` 往返、`packLayout`/`unpackLayout` 的 gzip 往返、存储封装、`analyzeThumb`→`paperTintVars` 取色、搜索命中、`isSelfAndDescendant` 防成环）。界面像素它证明不了，v3.0.0 才补上真浏览器那一段。
+
+> 老 README 里「本机 headless 起不来、截不到图」的结论已经作废：**Playwright + 本机 chromium 能正常打开 `file://` 页面、截图、驱动鼠标**，v3.0.0 的整套比对就是靠它做的。
 
 ## 版本管理
 
@@ -438,35 +521,53 @@ git show v1.20.7:newtab.js # 看某一版的原文件
 git restore newtab.js      # 改坏了，退回上一次提交
 ```
 
-规矩：**每次改动同步 bump `manifest.json` 的 `version` 和 `newtab.js` 里 `stampBuild()` 的 `let ver` 兜底值**，并更新本 README，然后提交 + 打 tag。两处版本号不一致的话，页面左下角水印会和实际不符。
+规矩：**每次改动同步 bump 三处**——`app/public/manifest.json` 的 `version`、`app/src/lib/constants.ts` 里的 `APP_VERSION`（左下角水印的兜底值）、以及本 README，然后 `pnpm build` + 提交 + 打 tag。三处不一致的话，水印会和实际不符。
+
+根目录那份 v2.1.0 的 `manifest.json` 与 `newtab.js` 里的 `stampBuild()` 兜底值**冻结在 2.1.0**（它只是对照基线，不再改动）；要是哪天还在动老文件，记得照老规矩两边一起 bump。
 
 ## 工作纪律
 
 踩过坑，写在这免得再踩：
 
-1. **临时文件绝不落在扩展目录里。** Chrome / Edge 加载未打包扩展时，遇到下划线开头的文件（`_t.mjs`、`_scan.mjs`…）会**拒绝整个目录**，报 `Filenames starting with "_" are reserved for use by the system.` 所以验证脚本一律写到 `$env:TEMP`，收尾跑 `ls -1 | grep '^_'` 确认为空。本项目目录应该只有：`README.md` / `manifest.json` / `newtab.css` / `newtab.html` / `newtab.js` / `icons/`（加 git 的 `.git/` `.gitignore` `.gitattributes`）。
-2. **不要用「整段替换」的粗暴脚本改 `newtab.js`。** 曾经按「第一个块注释」截取并挪动注释，连带删掉了文件头一整套公共层，造成 `$ is not defined`。动文件头之前先 `grep -n` 确认边界。
-3. **改完立刻跑上面三条命令。** 第 2 条里的「顶层调用是否早于定义」专门治 `xxx is not defined at 第 N 行` 这类只在真浏览器里才炸的错。
+1. **临时文件绝不落在扩展目录里**（含 `dist/`）。Chrome / Edge 加载未打包扩展时，遇到下划线开头的文件（`_t.mjs`、`_scan.mjs`…）会**拒绝整个目录**，报 `Filenames starting with "_" are reserved for use by the system.` 所以验证脚本一律写到 `$env:TEMP`，收尾跑 `ls -1 | grep '^_'` 确认为空。本项目目录应该只有：`README.md` / `app/` / `dist/` / `package.json` / `pnpm-lock.yaml` / `vite.config.ts` / `tsconfig.json` / `tailwind.config.ts` / `node_modules/` / 老版本的 `manifest.json` `newtab.html` `newtab.css` `newtab.js` `icons/`（加 git 的 `.git/` `.gitignore` `.gitattributes`、技能目录 `.agents/`）。
+2. **不要用「整段替换」的粗暴脚本改源码。** 曾经按「第一个块注释」截取并挪动注释，连带删掉了文件头一整套公共层，造成 `$ is not defined`。动文件头之前先 `grep -n` 确认边界。
+3. **改完立刻跑验证。** v3.0.0 起最低门槛是 `pnpm build`（内含 `tsc -b`，类型错会直接拦住）；涉及界面的再跑上面那套 Playwright 比对。
+4. **CSS 变量别撞车。** `legacy.css` 用 `--accent`（蓝）、`--paper*`、`--ink*`、`--fs-*`、`--r-*` 一整套；shadcn 的默认变量名与之重叠，所以 `index.css` 里 shadcn 那套统一加了 `--sh-` 前缀。踩过一次：`--accent` 被 shadcn 的灰值覆盖，卡片标题旁边的蓝色竖条直接隐形。
 
 ## 说明
 
 - 只接管新标签页，不改动书签栏和工具栏。
-- 壁纸（含模糊档位）、置顶清单与「显示方式」设置保存在扩展本地存储（`chrome.storage.local`）；预览模式（非扩展）用 localStorage。
+- **v3.0.0 起源码在 `app/`、产出在 `dist/`**，扩展加载 `dist/`。改完记得 `pnpm build`，浏览器不会自己去看源码。
+- 壁纸（含模糊档位）、置顶清单、「显示方式」设置、当前引擎保存在扩展本地存储（`chrome.storage.local`）；预览模式（非扩展）用 localStorage。
 - 布局同步就是**导出 / 导入**：存成文件带走，或复制分享文本发给自己（v1.11.0）。全程离线，不发任何请求。v1.12 / v1.13 实验过的 GitHub 仓库同步已在 v1.14.0 移除——两台设备偶尔搬一次，不值得背一个会因网络、token、仓库权限各种原因半夜失败的环节。
-- 需要 Chrome / Edge 88 以上（用到 `chrome.bookmarks` Promise 接口、`_favicon` 接口、`chrome.storage`）。
+- 需要 Chrome / Edge 110 以上（构建目标 `chrome110`；用到 `chrome.bookmarks` Promise 接口、`_favicon` 接口、`chrome.storage`、`CompressionStream`）。
 - 必应壁纸需要联网；离线时用渐变预设即可。
 
 ## 目录
 
 ```
-├── manifest.json        扩展声明（MV3，覆盖新标签页；只声明 bing 域名，用来拉每日壁纸）
-├── newtab.html          页面结构（时钟 / 搜索 / 置顶图标栏 / 卡片区 / 放大层 / 壁纸面板 / 同步面板）
-├── newtab.css           全部样式
-├── newtab.js            v2.0.0 全量重写：书签读取、卡片渲染、放大下钻、跨文件夹拖拽、多引擎搜索、
-│                        置顶图标、显示方式推断、壁纸与取色、布局导出 / 导入 / 分享文本
-├── icons/               16 / 32 / 48 / 128 图标
-├── .gitignore           git 忽略规则
-└── .gitattributes       强制 LF 换行，避免 Windows 上整文件假 diff
+├── app/                         v3.0.0 源码（TypeScript + React）
+│   ├── newtab.html              入口
+│   ├── public/manifest.json     扩展声明（MV3，覆盖新标签页；只声明 bing 域名，用来拉每日壁纸）+ icons/
+│   └── src/
+│       ├── main.tsx  App.tsx    挂载 + 整页装配（背景 / 顶栏 / 舞台 / 置顶栏 / 放大层 / 各面板）
+│       ├── index.css            legacy.css → tailwind 三层 → shadcn 变量（`--sh-` 前缀）
+│       ├── styles/legacy.css    newtab.css 的逐字副本（像素由它负责）
+│       ├── components/
+│       │   ├── topbar/          时钟 + 搜索框 + 引擎菜单 + 右上三颗按钮
+│       │   ├── board/           卡片、格子、子文件夹行、显示方式切换、置顶栏、面包屑、放大层
+│       │   ├── panels/          壁纸面板、布局同步面板
+│       │   ├── shell/           水印、提示气泡、快捷键卡、拖放提示、弹窗、右键菜单
+│       │   └── ui/              shadcn 基础件
+│       └── lib/                 chrome 封装、store（state + bump）、tree、drag、menus、keys、
+│                                tint（纸跟着壁纸取色）、wallpaper、sync（布局导出/导入/分享）、
+│                                bing（必应壁纸）、actions（增删改建置顶）
+├── dist/                        构建产物 = 灌进浏览器的那个「已解压扩展」
+├── package.json  pnpm-lock.yaml  vite.config.ts  tsconfig.json  tailwind.config.ts
+├── manifest.json                v2.1.0 老版本声明（冻结，对照用）
+├── newtab.html / newtab.css / newtab.js    v2.1.0 老版本（冻结，对照用）
+├── icons/                       v2.1.0 的 16 / 32 / 48 / 128 图标
+├── .gitignore  .gitattributes   忽略规则 / 强制 LF 换行，避免 Windows 上整文件假 diff
 ```
 
-未安装扩展时直接用浏览器打开 `newtab.html` 会进入预览模式（内置一组示例书签），置顶 / 壁纸改动保存在 localStorage；此时必应壁纸因跨域可能无法加载，属正常现象。
+未安装扩展时直接双击 `dist/newtab.html`（或开发时开 `http://localhost:5173/newtab.html`）会进入预览模式（内置一组示例书签），置顶 / 壁纸改动保存在 localStorage；此时必应壁纸因跨域可能无法加载，属正常现象。

@@ -17,3 +17,7 @@ desktop.ini
 *.zip
 *.crx
 *.pem
+
+# v3.0.0 起：源码在 app/，构建产物在 dist/（加载扩展选 dist，但不进版本库）
+dist/
+*.tsbuildinfo
