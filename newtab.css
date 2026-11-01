@@ -43,6 +43,11 @@
   --sheet-brd: rgba(255, 255, 255, 0.82);
   --sheet-shadow: 0 1px 1px rgba(10, 12, 20, 0.1), 0 22px 48px -20px rgba(6, 9, 18, 0.6);
   --sheet-blur: blur(22px) saturate(150%);
+  /* v2.1.0：完全不透明的薄片色 —— 给「不能透」的浮层用（搜索引擎下拉）。
+     和 --sheet-bg 是同一块纸色，只是把 86% 补成 100%；描边也从白换成纸线，
+     否则不透明的底配上纯白描边会显得像贴了张标签。 */
+  --sheet-solid: #fdfcfa;
+  --sheet-solid-brd: rgba(20, 22, 26, 0.1);
 
   /* 桌面上的交互（置顶栏 / 顶栏按钮） */
   --hover: rgba(255, 255, 255, 0.13);
@@ -304,19 +309,12 @@ body[data-light="1"] .bg-grain {
   transition: background 0.15s;
 }
 .engine-btn:hover { background: var(--hover); }
-.engine-logo {
-  width: 16px; height: 16px;
-  display: grid; place-items: center;
-  border-radius: var(--r-row);
-  font-size: var(--fs-1);
-  font-weight: var(--fw-3);
-  color: #fff;
-  overflow: hidden;
-}
-.engine-logo svg { width: 16px; height: 16px; display: block; }
 .engine-name { white-space: nowrap; }
 .engine-caret { width: 13px; height: 13px; color: var(--text-3); }
 .search-sep { flex: 0 0 auto; width: 1px; height: 18px; background: var(--glass-brd); }
+/* v2.1.0：菜单不再透。以前用 --sheet-bg（86% 透明）+ 背景模糊，
+   底下是深壁纸时字会「泡」在里面；这里直接用不透明的纸色，
+   模糊也一并去掉，免得描边后面还透着壁纸的色块。 */
 .engine-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -325,10 +323,8 @@ body[data-light="1"] .bg-grain {
   min-width: 150px;
   padding: 5px;
   border-radius: var(--r-sheet);
-  background: var(--sheet-bg);
-  border: 1px solid var(--sheet-brd);
-  backdrop-filter: var(--sheet-blur);
-  -webkit-backdrop-filter: var(--sheet-blur);
+  background: var(--sheet-solid);
+  border: 1px solid var(--sheet-solid-brd);
   box-shadow: var(--sheet-shadow);
   color: var(--sheet-ink);
   animation: pop 0.14s var(--ease);
@@ -350,8 +346,6 @@ body[data-light="1"] .bg-grain {
 }
 .engine-menu button:hover { background: var(--paper-hover); }
 .engine-menu button.on { background: var(--accent-soft); color: var(--accent); }
-.engine-menu .engine-logo { width: 18px; height: 18px; }
-.engine-menu .engine-logo svg { width: 18px; height: 18px; }
 #searchInput {
   flex: 1 1 auto;
   min-width: 0;
@@ -441,45 +435,22 @@ body[data-light="1"] .bg-grain {
 .tray-app.dragging { opacity: 0.4; }
 .tray-app.drop-target { background: var(--accent-soft); }
 
-/* ---------- 置顶栏拖拽：真的让位（v2.0.6） ----------
-   被拖的那格原地留位（.tray-lifted，占着位但看不见），
-   虚线空槽（.tray-ghost）就是插入位：指针走到哪它挪到哪，别的格子跟着让。
-   宽度和格子一样（72 含边框，box-sizing: border-box），
-   虚线框贴着格子外沿画，进来时淡一下，不抖动。 */
-.tray-ghost {
-  position: relative;
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  width: 72px;
-  border-radius: var(--r-sheet);
-  border: 2px dashed color-mix(in srgb, var(--accent) 78%, #fff);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  pointer-events: none;
-  animation: trayGhostIn 0.14s var(--ease);
-}
-@keyframes trayGhostIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-.tray-sorting .tray-app { transition: transform 0.12s var(--ease), background 0.16s var(--ease); }
-.tray-app.tray-lifted { opacity: 0.001; }
-
-/* 拖动排序时插到哪两条之间的提示线（v1.8，v2.0.6 起加粗加长） */
-.tray-app.mark-before::after,
-.tray-app.mark-after::after {
+/* ---------- 置顶栏拖拽（v2.1.0 起和卡片图标同一套逻辑） ----------
+   落到哪格的左/右半边，那一格旁边就亮起一条竖线；松手插到线那儿。
+   提示线画在格子外沿（::before，绝对定位），进来时不抖动。 */
+.tray-app.insert-before::before,
+.tray-app.insert-after::before {
   content: '';
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 6px;
+  bottom: 6px;
   width: 3px;
   border-radius: 2px;
   background: var(--accent);
-  box-shadow: 0 0 6px var(--accent);
-  animation: trayMarkIn 0.12s ease-out;
+  box-shadow: 0 0 8px var(--accent);
 }
-.tray-app.mark-before::after { left: -9px; }
-.tray-app.mark-after::after { right: -9px; }
-@keyframes trayMarkIn { from { opacity: 0; } to { opacity: 1; } }
+.tray-app.insert-before::before { left: -6px; }
+.tray-app.insert-after::before { right: -6px; }
 .tray-app .tray-ico {
   width: 46px; height: 46px;
   border-radius: var(--r-sheet);
@@ -829,6 +800,7 @@ body[data-light="1"] .folder-zoom-backdrop {
   margin-bottom: 20px;
 }
 .zoom-folder {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -936,6 +908,7 @@ body[data-light="1"] .folder-zoom-backdrop {
 }
 /* 子文件夹是相纸上的「一块浅色区域」，靠色块区分，不靠描边堆框 */
 .subfolder {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1027,6 +1000,35 @@ body[data-light="1"] .folder-zoom-backdrop {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent) inset;
 }
+/* v2.1.0 子文件夹拖动换位的插入提示：
+   卡片里的子文件夹是竖排列表，提示线横着画在上/下沿；
+   放大层文件夹是横排网格，提示线竖着画在左/右沿 */
+.subfolder.insert-before::before,
+.subfolder.insert-after::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.subfolder.insert-before::before { top: -2px; }
+.subfolder.insert-after::before { bottom: -2px; }
+.zoom-folder.insert-before::before,
+.zoom-folder.insert-after::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.zoom-folder.insert-before::before { left: -6px; }
+.zoom-folder.insert-after::before { right: -6px; }
 .folder-zoom-card.drop-active {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent) inset, var(--paper-shadow-up);
@@ -1261,6 +1263,30 @@ body.is-dragging .zoom-folder {
 .ctx button.danger:hover { background: rgba(208, 51, 43, 0.09); }
 .ctx .kbd { margin-left: auto; font-size: var(--fs-1); color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .ctx hr { border: 0; height: 1px; background: var(--paper-line); margin: 4px 2px; }
+/* 二级菜单（v2.1.0「添加到」）：父按钮悬停弹出，挂在按钮内 absolute 定位 */
+.ctx .has-sub { position: relative; padding-right: 26px; }
+.ctx .has-sub::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: translateY(-50%) rotate(45deg);
+  opacity: 0.55;
+}
+.ctx .ctx-sub {
+  position: absolute;
+  top: -5px;
+  left: calc(100% + 2px);
+  min-width: 200px;
+  max-height: min(340px, 58vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ctx .ctx-sub.sub-left { left: auto; right: calc(100% + 2px); }
 
 @keyframes pop {
   from { transform: scale(0.968) translateY(4px); opacity: 0; }

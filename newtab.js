@@ -111,12 +111,12 @@ const WALL_BLURS = [
   { id: 'deep', label: '重', px: 40 },
 ];
 
+/* v2.1.0：只留三家 —— 必应 / 百度 / Google。
+   以前每个引擎还有个「首字当图标」的 logo，现在一律只写名字（下拉菜单同理）。 */
 const ENGINES = [
-  { id: 'bing', name: '必应', logo: 'B', url: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}` },
-  { id: 'baidu', name: '百度', logo: '百', url: (q) => `https://www.baidu.com/s?wd=${encodeURIComponent(q)}` },
-  { id: 'google', name: 'Google', logo: 'G', url: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}` },
-  { id: 'sogou', name: '搜狗', logo: '搜', url: (q) => `https://www.sogou.com/web?query=${encodeURIComponent(q)}` },
-  { id: 'ddg', name: 'DuckDuckGo', logo: 'D', url: (q) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}` },
+  { id: 'bing', name: '必应', url: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}` },
+  { id: 'baidu', name: '百度', url: (q) => `https://www.baidu.com/s?wd=${encodeURIComponent(q)}` },
+  { id: 'google', name: 'Google', url: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}` },
 ];
 
 const MODE_ICON = 'icon';
@@ -1522,6 +1522,13 @@ function buildZone(node, opts) {
   }
 
   zone.append(head, body);
+  /* 卡片空白处的右键（子级条目都有自己的菜单且不冒泡，能到这的就是空白）。
+     开着的文件夹卡头自己有 showFolderMenu，也会挡在这一层之前 */
+  zone.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showZoneBlankMenu(node, e.clientX, e.clientY);
+  });
   bindZoneDrop(zone, node);
   return zone;
 }
@@ -1717,8 +1724,12 @@ function openZoom(node) {
           openZoom(s);
         }
       });
+      b.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showFolderMenu(s, e.clientX, e.clientY);
+      });
       bindSubDrag(b, s);
-      bindZoomFolderDrop(b, s);
       list.appendChild(b);
     });
     content.appendChild(list);
@@ -1845,10 +1856,8 @@ function paintTray() {
 /* ---------- 8.1 搜索引擎 / 时钟 / 跳转 ---------- */
 function paintEngine() {
   const e = ENGINES.find((x) => x.id === state.engine) || ENGINES[0];
-  const logo = $('engineLogo');
   const name = $('engineName');
   const input = $('searchInput');
-  if (logo) logo.textContent = e.logo;
   if (name) name.textContent = e.name;
   if (input) paintPlaceholder();
   const menu = $('engineMenu');
@@ -2054,7 +2063,7 @@ const ITEM_EDGE = 0.5;
 
 function itemEdgeOf(el, e) {
   const r = el.getBoundingClientRect();
-  if (el.classList.contains('tile')) {
+  if (el.classList.contains('tile') || el.classList.contains('tray-app')) {
     // 图标方块是横排的，按左右分
     return e.clientX < r.left + r.width * ITEM_EDGE ? 'before' : 'after';
   }
@@ -2074,6 +2083,9 @@ function bindItemDrop(el, node) {
     el.classList.toggle('insert-before', edge === 'before');
     el.classList.toggle('insert-after', edge === 'after');
     el.classList.remove('drop-active');
+    // 手指挪到某一格上了，卡片那层「挪进去」的蓝底就该收掉
+    const host = el.closest ? el.closest('.zone') : null;
+    if (host) host.classList.remove('drop-active');
   });
   el.addEventListener('dragleave', (e) => {
     if (el.contains(e.relatedTarget)) return;
@@ -2098,21 +2110,64 @@ function bindSubDrag(el, node) {
     e.stopPropagation();
   });
   el.addEventListener('dragend', endDrag);
+  bindFolderDrop(el, node);   // 卡片内的子文件夹行也要能接落点（换序 / 移进去）
 }
 
+/* 置顶栏拖拽（v2.1.0 起和卡片图标同一套逻辑）：
+   落到哪格的左/右半边就插到它前面/后面，落点处一条竖线提示，所见即所得。
+   拖的不是置顶图标（比如卡片里的书签拖到图标上）不接排序。 */
 function bindTrayDrag(el, node) {
   el.addEventListener('dragstart', (e) => {
     el.classList.add('dragging');
     beginDrag(e, node);
-    /* 只有置顶栏里的图标才起「让位」预览；卡片里的图标拖出来是另一种语义 */
-    if (isPinned(node.id)) startTrayPreview(el, e);
     e.stopPropagation();
   });
-  el.addEventListener('dragend', () => {
-    /* 只是点了一下（没够到拖动阈值）就顺手把预览收回，别留下虚线框 */
-    endTrayPreview();
-    endDrag();
+  el.addEventListener('dragend', endDrag);
+  bindTrayItemDrop(el, node);
+}
+
+function bindTrayItemDrop(el, node) {
+  el.addEventListener('dragover', (e) => {
+    const src = state.dragNode;
+    // 只有置顶图标之间才换序；从卡片拖来的普通书签不接（不给插入线，免得骗人）
+    if (!src || !isPinned(src.id)) return;
+    if (String(src.id) === String(node.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const edge = itemEdgeOf(el, e);
+    el.classList.toggle('insert-before', edge === 'before');
+    el.classList.toggle('insert-after', edge === 'after');
   });
+  el.addEventListener('dragleave', (e) => {
+    if (el.contains(e.relatedTarget)) return;
+    el.classList.remove('insert-before', 'insert-after');
+  });
+  el.addEventListener('drop', (e) => {
+    const src = state.dragNode;
+    if (!src || !isPinned(src.id)) return;
+    if (String(src.id) === String(node.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const edge = itemEdgeOf(el, e);
+    endDrag();
+    reorderTray(src, node, edge);
+  });
+}
+
+/* 置顶栏内换序：state.icons 是本地清单，直接重排后写回。
+   moveIcon(id, at) 的 at 是「原列表里插到谁前面」的下标 */
+async function reorderTray(src, target, edge) {
+  const list = (state.icons || []).map((entry) => {
+    const n = resolveIconEntry(entry);
+    return n ? String(n.id) : null;
+  });
+  const f = list.indexOf(String(src.id));
+  const t = list.indexOf(String(target.id));
+  if (f < 0 || t < 0) return;
+  if (edge === 'before' && f === t - 1) return;   // 本来就在它前面
+  if (edge === 'after' && f === t + 1) return;    // 本来就在它后面
+  await moveIcon(src.id, edge === 'before' ? t : t + 1);
 }
 
 /* 卡片标题栏是把手：落到别的卡片左/右窄边 = 换位置，落到中间 = 挪进去 */
@@ -2148,8 +2203,18 @@ function bindZoneDrop(zone, node) {
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
 
+    /* v2.1.0：只有「松手真的会挪动」才点蓝。
+       以前不管能不能动都点，用户看到整张卡发蓝、松手却什么都没发生，
+       或者更糟 —— 条目被摘下来追加到本卡末尾（=「跑到列表最后」那个 bug）。
+       拖到窄边算换卡片位置（同级之间），这条永远接；
+       只有落到中间才要求「真的能挪进去」。 */
     const srcIsFolder = !src.url;
     const edge = srcIsFolder && !zone.classList.contains('dragging') ? zoneEdgeOf(zone, e.clientX) : '';
+    if (!edge && !canDropInto(src, node)) {
+      zone.classList.remove('drop-active', 'insert-before', 'insert-after');
+      return;
+    }
+
     zone.classList.toggle('insert-before', edge === 'before');
     zone.classList.toggle('insert-after', edge === 'after');
     zone.classList.toggle('drop-active', !edge);
@@ -2164,61 +2229,46 @@ function bindZoneDrop(zone, node) {
     e.preventDefault();
     e.stopPropagation();
 
+    const targetId = zoneFolderId(node);
     const edge = (!src.url && !zone.classList.contains('dragging')) ? zoneEdgeOf(zone, e.clientX) : '';
     endDrag();
-    if (src.id === node.id) return;
-    // 落点是「未分组」这种虚拟卡：目标是它所在的文件夹
-    const targetId = node.id && String(node.id).startsWith('__loose__') ? null : node.id;
-
+    if (!edge && !canDropInto(src, node)) return;
     if (edge && targetId) { reorderZone(src, node, edge); return; }
     moveInto(src, targetId);
   });
 }
 
-/* 拖到子文件夹那一行：优先「移进那个子文件夹」，不会误判成换位置 */
-function bindZoomFolderDrop(el, node) {
-  el.addEventListener('dragover', (e) => {
-    if (!state.dragNode) return;
-    e.preventDefault();
-    e.stopPropagation();
-    el.classList.add('drop-active');
-  });
-  el.addEventListener('dragleave', (e) => {
-    if (el.contains(e.relatedTarget)) return;
-    el.classList.remove('drop-active');
-  });
-  el.addEventListener('drop', (e) => {
-    if (!state.dragNode) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const src = state.dragNode;
-    endDrag();
-    moveInto(src, node.id);
-  });
+/* 卡片对应的「真正的文件夹 id」——
+   「未分组」那张虚拟卡的 id 是 `__loose__:<父文件夹 id>`，父文件夹写在里面 */
+function zoneFolderId(node) {
+  const id = node && node.id ? String(node.id) : '';
+  if (!id) return '';
+  const LOOSE = '__loose__:';
+  return id.startsWith(LOOSE) ? id.slice(LOOSE.length) : id;
 }
 
-/* 桌面上的卡片：拖到卡片空白处 = 挪进这个文件夹 */
+/* 把 src 松手在这张卡片的空白处，会发生什么？
+   会挪进它的文件夹才算数。本来就在这个文件夹里的话，这次「移动」
+   只是把它从原位摘下来追加到末尾 —— 没有插入线就不该有这个副作用。 */
+function canDropInto(src, zoneNode) {
+  if (!src) return false;
+  const targetId = zoneFolderId(zoneNode);
+  if (!targetId || !state.byId.get(targetId)) return false;
+  if (isSelfOrDescendant(src, targetId)) return false;   // 自己 / 自己的子孙
+  if (String(src.parentId || '') === String(targetId)) return false;  // 已在里面
+  return true;
+}
+
+/* 桌面上的卡片：拖到卡片空白处 = 挪进这个文件夹（由 bindZoneDrop 管）。
+   v2.1.0 起 stage 自己不再接内部拖拽 —— 以前在两卡之间的空隙松手，
+   条目会被挪到「书签栏根目录」，从卡片里彻底消失，比跑到末尾还莫名。
+   页面级的 dragover 兜底在 bindExternalLinkDrop 里，禁止拖动时浏览器跳转。 */
 function bindStageDrop() {
   const stage = $('stage');
   if (!stage) return;
-  stage.addEventListener('dragover', (e) => {
-    if (!state.dragNode) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    stage.classList.add('drop-active');
-  });
   stage.addEventListener('dragleave', (e) => {
     if (stage.contains(e.relatedTarget)) return;
     stage.classList.remove('drop-active');
-  });
-  stage.addEventListener('drop', (e) => {
-    if (!state.dragNode) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const src = state.dragNode;
-    endDrag();
-    const here = current();
-    moveInto(src, here && here.id);
   });
 }
 
@@ -2366,204 +2416,83 @@ async function setItemModeQuiet(node, mode) {
   await storeSet('views', state.views);
 }
 
-/* ---------- 置顶栏拖拽：真的让位 ----------
-   以前只给落点那格加一根 3px 的线，拖的时候看不清「到底插不插得进去」。
-   现在从按下就开始：被拖的那格原地留一个虚线空槽，指针走到哪空槽就挪到哪，
-   别的格子跟着让位；松手时图标正好落进空槽，所见即所得。
-   （拖拽过程中先由预览 CSS 控制，松手后 paintTray() 重绘成真实顺序。） */
-const TRAY_EDGE = 0.5;
-let trayLastIndex = null;           // 指针当前对应的插入下标（去掉自己后的 0..n-1；null = 还没移动过）
-let traySourceEl = null;            // 被拖的那格（先藏起来当空槽的原位）
-let trayGhostEl = null;             // 跟着指针走的虚线空槽
-let trayDragStarted = false;        // 这一次算不算「真的在拖」（拖满 3px 才起预览）
-let trayStartX = 0;                 // 指针按下时在哪（3px 阈值用）
-let trayStartY = 0;
-let trayPrevEl = null;              // 被拖那格原来的左右邻居（判断有没有真的换位）
-let trayNextEl = null;
+/* ---------- 子文件夹 / 放大层文件夹的拖动换位（v2.1.0） ----------
+   以前文件夹只能「拖进别的文件夹」，同级之内挪不了位置。
+   现在落到另一条的边上 = 排到它前面/后面，落到中间 = 移进去（原行为）。
+   横排的（放大层文件夹是网格）按左右分，竖排的（卡片里子文件夹列表）按上下分。 */
+const FOLDER_EDGE = 0.3;
 
-function trayItemsOf(box) {
-  return Array.from(box.querySelectorAll('.tray-app'));
-}
-
-/* 按指针位置算插入下标：落在某格左半 → 插到它前面，右半 → 插到它后面。
-   换行布局按「行」算，行尾右半不会被误算到下一行开头。 */
-function trayInsertAt(box, x, y) {
-  const items = trayItemsOf(box);
-  if (!items.length) return 0;
-  const rects = items.map((el) => el.getBoundingClientRect());
-  let best = 0;
-  let bestD = Infinity;
-  for (let i = 0; i < rects.length; i += 1) {
-    const r = rects[i];
-    const dx = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
-    const dy = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
-    const d = dx * dx + dy * dy;
-    if (d < bestD) {
-      bestD = d;
-      best = x < r.left + r.width * TRAY_EDGE ? i : (x > r.right - r.width * TRAY_EDGE ? i + 1 : (x < r.left + r.width / 2 ? i : i + 1));
-    }
-  }
-  // 指针在某一格的行高范围内：只按这一行算，避免行尾右半被算到下一行开头
-  for (let i = 0; i < rects.length; i += 1) {
-    const r = rects[i];
-    if (y < r.top || y > r.bottom) continue;
-    if (x < r.left + r.width * TRAY_EDGE) return i;
-    const j = i + 1;
-    if (x <= r.right - r.width * TRAY_EDGE || j >= rects.length || Math.abs(rects[j].top - r.top) > 4) return j;
-    // 落在右半边但同行还有下一格 → 交给下一格判（下一格左半边 = 同一个位置）
-    i = j - 1;  }
-  // 指针在行间空隙 / 上下留白：按最近的那一格算
-  return best;
-}
-
-/* 让位：真格子保持 DOM 顺序（= state.icons 顺序），中间塞一个虚线的空槽；
-   「插到第几格」和 moveIcon(id, at) 的口径一致 —— 都是去掉被拖那格之后的下标。
-   注意：被拖的那格要留在 DOM 里（CSS 里它是透明的占位），不能从 append 列表里漏掉，
-   否则它会被挤到末尾 —— 之前「原地松手跑到末尾」就是这么来的。 */
-function paintTrayPreview(at, x, y) {
-  const box = $('trayApps');
-  if (!box || !trayGhostEl || !traySourceEl) return;
-  const all = trayItemsOf(box);                 // 含被拖的那格
-  const reals = [];
-  for (let i = 0; i < all.length; i += 1) {
-    if (all[i] !== traySourceEl) reals.push(all[i]);
-  }
-  const idx = Math.max(0, Math.min(reals.length, at));   // 空槽该插到第几格（去掉自己之后）
-
-  /* 排 DOM 顺序：其余格子按原序，空槽插到第 idx 位，被拖那格放回它原来的序号位置。 */
-  let srcIndex = 0;                 // 被拖那格「在去掉自己后的列表里」的序号
-  {
-    let seen = 0;
-    let found = false;
-    for (let i = 0; i < all.length; i += 1) {
-      if (all[i] === traySourceEl) { srcIndex = seen; found = true; break; }
-      seen += 1;
-    }
-    if (!found) srcIndex = reals.length;
-  }
-  const seq = [];
-  for (let i = 0; i <= reals.length; i += 1) {
-    if (i === idx) seq.push(trayGhostEl);     // 空槽：插到第 idx 位
-    if (i === reals.length) break;
-    if (i === srcIndex) seq.push(traySourceEl);  // 被拖那格：还在原位（透明占位）
-    seq.push(reals[i]);
-  }
-  if (seq.indexOf(traySourceEl) < 0) seq.push(traySourceEl);
-
-  // 顺序没变就别动 DOM（动一次会打断 hover / 触发重排闪一下）
-  let same = seq.length === box.children.length;
-  if (same) {
-    for (let i = 0; i < seq.length; i += 1) {
-      if (box.children[i] !== seq[i]) { same = false; break; }
-    }
-  }
-  if (!same) box.append.apply(box, seq);
-  trayLastIndex = idx;
-  trayDragStarted = trayMovedFrom(seq, idx);
-
-  // 高亮竖线：先画在空槽后面那一格的左边；后面没有格子就画在前面那格的右边
-  for (let i = 0; i < all.length; i += 1) all[i].classList.remove('insert-before', 'insert-after');
-  const ghostPos = seq.indexOf(trayGhostEl);
-  const prev = ghostPos > 0 ? seq[ghostPos - 1] : null;
-  const next = ghostPos + 1 < seq.length ? seq[ghostPos + 1] : null;
-  if (next && next !== traySourceEl) next.classList.add('insert-before');
-  else if (prev && prev !== traySourceEl) prev.classList.add('insert-after');
-  box.classList.add('tray-sorting');
-}
-
-/* 这一次拖动是不是「换了位置」：空槽左右两侧的邻居和原来不一样，才算换位。
-   原来那对邻居是 (trayPrevEl, trayNextEl)；被拖那格自己就在旁边，
-   所以判断时要把它当成「已经摘掉」。没换位就当成点按：不写存储也不重绘。 */
-function trayMovedFrom(seq, idx) {
-  /* 空槽在 seq 里的真实下标要现查 —— seq 里还夹着被拖那格，不能直接拿 idx 当位置 */
-  const ghostPos = seq.indexOf(trayGhostEl);
-  if (ghostPos < 0) return false;
-  let prev = ghostPos > 0 ? seq[ghostPos - 1] : null;
-  let next = ghostPos + 1 < seq.length ? seq[ghostPos + 1] : null;
-  /* 邻居里夹着被拖那格时，往旁边再跨一格才是「真正的邻居」 */
-  if (prev === traySourceEl) prev = ghostPos - 2 >= 0 ? seq[ghostPos - 2] : null;
-  if (next === traySourceEl) next = ghostPos + 2 < seq.length ? seq[ghostPos + 2] : null;
-  const okPrev = prev === trayPrevEl;
-  const okNext = next === trayNextEl;
-  return !(okPrev && okNext);
-}
-
-function endTrayPreview() {
-  const box = $('trayApps');
-  if (box) {
-    box.classList.remove('tray-sorting');
-    box.querySelectorAll('.tray-app').forEach((el) => el.classList.remove('insert-before', 'insert-after'));
-  }
-  if (trayGhostEl) { trayGhostEl.remove(); trayGhostEl = null; }
-  if (traySourceEl) { traySourceEl.classList.remove('tray-lifted'); traySourceEl = null; }
-  trayPrevEl = null;
-  trayNextEl = null;
-  // trayLastIndex / trayDragStarted 留给 drop 用，下一次 startTrayPreview 再清
-}
-
-/* 按下时：被拖的格子就地留位（原尺寸的虚线空槽），图标本身变淡 */
-function startTrayPreview(el, e) {
-  const box = $('trayApps');
-  if (!box || !el || trayGhostEl) return;
-  endTrayPreview();
-  traySourceEl = el;
-  trayDragStarted = false;
-  trayLastIndex = null;
-  trayStartX = (e && e.clientX) || 0;
-  trayStartY = (e && e.clientY) || 0;
-  /* 空槽做成和格子同尺寸的外壳：里面不放东西，只露虚线框 */
-  const slot = document.createElement('div');
-  slot.className = 'tray-ghost';
-  slot.setAttribute('aria-hidden', 'true');
+function folderEdgeOf(el, e) {
   const r = el.getBoundingClientRect();
-  slot.style.width = `${r.width}px`;
-  slot.style.height = `${r.height}px`;
-  /* 记下它原来的左右邻居：用来判断「到底换没换位」。
-     （不靠 previousElementSibling，因为空槽马上要插进去，读到的就是空槽） */
-  trayPrevEl = el.previousElementSibling;
-  trayNextEl = el.nextElementSibling;
-  trayGhostEl = slot;
-  el.after(slot);
-  el.classList.add('tray-lifted');
+  const horizontal = el.classList.contains('zoom-folder');
+  if (horizontal) {
+    if (e.clientX < r.left + r.width * FOLDER_EDGE) return 'before';
+    if (e.clientX > r.right - r.width * FOLDER_EDGE) return 'after';
+  } else {
+    if (e.clientY < r.top + r.height * FOLDER_EDGE) return 'before';
+    if (e.clientY > r.bottom - r.height * FOLDER_EDGE) return 'after';
+  }
+  return '';
 }
 
-function bindTrayDrop() {
-  const apps = $('trayApps');
-  if (!apps) return;
-  /* 挂在 document 上：拖到栏外（搜索框、卡片区）指针不在容器里，
-     也照样算位置，不会「拖出去就没反应」。 */
-  document.addEventListener('dragover', (e) => {
-    if (!state.dragNode) return;
-    if (!isPinned(state.dragNode.id)) return;
-    if (!trayGhostEl) return;
-    /* 要拖满 3px 才算「真的在拖」：手不稳点一下也起不来虚线框，免得看着像能插 */
-    if (!trayDragStarted) {
-      if (Math.abs(e.clientX - trayStartX) < 3 && Math.abs(e.clientY - trayStartY) < 3) return;
-      trayDragStarted = true;
-    }
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-    if (!e.clientX && !e.clientY) return;         // 有些环境不给坐标，别把空槽扔到栏尾
-    paintTrayPreview(trayInsertAt(apps, e.clientX, e.clientY), e.clientX, e.clientY);
-  });
-  document.addEventListener('drop', async (e) => {
-    if (!state.dragNode) return;
-    const srcId = state.dragNode.id;
-    const pinned = isPinned(srcId);
-    const wasPreviewing = !!trayGhostEl;
-    if (!pinned && !wasPreviewing) return;
+function bindFolderDrop(el, node) {
+  el.addEventListener('dragover', (e) => {
+    const src = state.dragNode;
+    if (!src) return;
     e.preventDefault();
     e.stopPropagation();
-    /* 口径：trayLastIndex 已经是「去掉自己之后的下标」，和 moveIcon 内部一致。
-       null = 指针一次都没动过（原地松手）→ 什么都不做，绝不能退化成追加到末尾。 */
-    const at = wasPreviewing ? trayLastIndex : null;
-    const moved = wasPreviewing ? trayDragStarted : true;
-    endDrag();
-    endTrayPreview();
-    if (!pinned) return;
-    if (!moved || at == null) return;
-    await moveIcon(srcId, at);
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    // 只有拖的是文件夹才谈得上换序；书签落上来永远是移进去
+    const edge = !src.url && String(src.id) !== String(node.id) ? folderEdgeOf(el, e) : '';
+    if (!edge && !canDropInto(src, node)) {
+      el.classList.remove('drop-active', 'insert-before', 'insert-after');
+      return;
+    }
+    el.classList.toggle('insert-before', edge === 'before');
+    el.classList.toggle('insert-after', edge === 'after');
+    el.classList.toggle('drop-active', !edge);
   });
+  el.addEventListener('dragleave', (e) => {
+    if (el.contains(e.relatedTarget)) return;
+    el.classList.remove('drop-active', 'insert-before', 'insert-after');
+  });
+  el.addEventListener('drop', (e) => {
+    const src = state.dragNode;
+    if (!src) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const edge = !src.url && String(src.id) !== String(node.id) ? folderEdgeOf(el, e) : '';
+    endDrag();
+    if (!edge && !canDropInto(src, node)) return;
+    if (edge) { reorderFolder(src, node, edge); return; }
+    moveInto(src, node.id);
+  });
+}
+
+/* 文件夹排到另一条的前面/后面：同层是换序，跨层等于「移过去插到它旁边」。
+   下标口径和 reorderItem 一致：chrome.bookmarks.move 按移动前的 children 算 */
+async function reorderFolder(src, target, edge) {
+  if (!src || src.url || !target || target.url) return;
+  if (String(src.id) === String(target.id)) return;
+  if (!HAS_BOOKMARKS) { toast('预览模式不能拖动'); return; }
+  const parentId = target.parentId;
+  const parent = state.byId.get(parentId);
+  if (!parent) return;
+  if (isSelfOrDescendant(src, target.id)) { toast('不能拖到自己里面'); return; }
+  try {
+    const all = childrenOf(parent);
+    let index = all.findIndex((c) => String(c.id) === String(target.id));
+    if (index < 0) return;
+    if (edge === 'after') index += 1;
+    const from = all.findIndex((c) => String(c.id) === String(src.id));
+    if (from >= 0 && from < index) index -= 1;
+    if (from === index && String(src.parentId) === String(parentId)) return;
+    await chrome.bookmarks.move(src.id, { parentId, index });
+    toast(`已排到「${target.title || '未命名'}」${edge === 'before' ? '前面' : '后面'}`);
+    await refresh();
+  } catch {
+    toast('调整顺序失败');
+  }
 }
 
 function isPinned(id) {
@@ -2594,7 +2523,14 @@ async function moveIcon(id, at) {
 /* 从网页里拖链接进来：落在哪张卡片 / 哪个子文件夹，就在那里新建书签 */
 function bindExternalLinkDrop() {
   document.addEventListener('dragover', (e) => {
-    if (state.dragNode) return;
+    /* 页面内部的拖拽（拖书签 / 拖卡片）：一律吞掉默认行为。
+       不吞的话在卡片外的空白处松手，浏览器会把 <a> 的 href 当链接导航过去；
+       接不接由各个落点自己决定，这里只负责「什么都不发生」。 */
+    if (state.dragNode) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      return;
+    }
     const types = (e.dataTransfer && e.dataTransfer.types) || [];
     const hasFile = Array.prototype.indexOf.call(types, 'Files') >= 0;
     const hasLink = Array.prototype.indexOf.call(types, 'text/uri-list') >= 0
@@ -2605,31 +2541,69 @@ function bindExternalLinkDrop() {
   });
 }
 
-/* ---------- 8.4 右键菜单 ---------- */
+/* ---------- 8.4 右键菜单 ----------
+   it = { label, on?, danger?, run } 或者带 children 的「二级菜单」项：
+   悬停 / 点一下就在旁边弹出子菜单（「添加到 → 某文件夹」就是这么做的） */
 function showMenu(x, y, items) {
   const ctx = $('ctx');
   if (!ctx) return;
   ctx.innerHTML = '';
-  items.forEach((it) => {
-    if (it === '-') { ctx.appendChild(document.createElement('hr')); return; }
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.textContent = it.label;
-    if (it.on) b.classList.add('on');
-    if (it.danger) b.classList.add('danger');
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      hideCtx();
-      Promise.resolve().then(() => it.run()).catch(() => {});
-    });
-    ctx.appendChild(b);
-  });
+  buildMenuItems(ctx, items);
   ctx.hidden = false;
   const w = ctx.offsetWidth || 180;
   const h = ctx.offsetHeight || 150;
   ctx.style.left = `${Math.max(6, Math.min(x, window.innerWidth - w - 10))}px`;
   ctx.style.top = `${Math.max(6, Math.min(y, window.innerHeight - h - 10))}px`;
   ctx.dataset.open = '1';
+}
+
+function buildMenuItems(box, items) {
+  items.forEach((it) => {
+    if (it === '-') { box.appendChild(document.createElement('hr')); return; }
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = it.label;
+    if (it.on) b.classList.add('on');
+    if (it.danger) b.classList.add('danger');
+    if (it.children && it.children.length) {
+      b.classList.add('has-sub');
+      const open = () => openSubmenu(b, it.children);
+      b.addEventListener('mouseenter', open);
+      b.addEventListener('click', (e) => { e.stopPropagation(); open(); });
+    } else {
+      b.addEventListener('mouseenter', () => closeSubmenus(box));
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideCtx();
+        Promise.resolve().then(() => it.run()).catch(() => {});
+      });
+    }
+    box.appendChild(b);
+  });
+}
+
+/* 二级菜单：作为子元素挂在父按钮上，靠 CSS absolute 定位；
+   右边放不下翻到左边，底下放不下整体上收 */
+function openSubmenu(parentBtn, children) {
+  const ctx = $('ctx');
+  if (!ctx) return;
+  closeSubmenus(ctx);
+  const sub = document.createElement('div');
+  sub.className = 'ctx ctx-sub';
+  buildMenuItems(sub, children);
+  parentBtn.appendChild(sub);
+  const r = parentBtn.getBoundingClientRect();
+  const sw = sub.offsetWidth || 180;
+  const sh = sub.offsetHeight || 120;
+  if (r.right + 4 + sw > window.innerWidth - 8) sub.classList.add('sub-left');
+  let top = 0;
+  if (r.top + sh > window.innerHeight - 8) top = (window.innerHeight - 8) - (r.top + sh);
+  sub.style.top = `${top}px`;
+}
+
+function closeSubmenus(box) {
+  if (!box) return;
+  box.querySelectorAll('.ctx-sub').forEach((n) => n.remove());
 }
 
 function hideCtx() {
@@ -2647,10 +2621,31 @@ function showTrayMenu(node, x, y) {
   ]);
 }
 
-/* 书签的右键：显示方式 / 置顶 / 复制 / 编辑删除 */
+/* 「添加到」的候选：整棵树里的所有文件夹，按树的先后排。
+   当前所在的那一层不放进去 ——「添加到别的文件夹」本来就不含原地 */
+function folderChoices(excludeId) {
+  const out = [];
+  const root = state.bar;
+  if (root && String(root.id) !== String(excludeId)) {
+    out.push({ id: root.id, label: '书签栏' });
+  }
+  const walk = (node, prefix) => {
+    (node.children || []).forEach((c) => {
+      if (c.url) return;
+      const label = prefix ? `${prefix} / ${c.title || '未命名'}` : (c.title || '未命名');
+      if (String(c.id) !== String(excludeId)) out.push({ id: c.id, label });
+      walk(c, label);
+    });
+  };
+  if (root) walk(root, '');
+  return out;
+}
+
+/* 书签的右键：显示方式 / 置顶 / 复制 / 添加到 / 编辑删除 */
 function showItemMenu(node, x, y) {
   const mode = modeOf(node);
   const explicit = isMode(state.views.items[node.id]);
+  const targets = folderChoices(node.parentId);
   showMenu(x, y, [
     { label: '打开', run: () => openUrl(node.url, false) },
     { label: '在新标签页打开', run: () => openUrl(node.url, true) },
@@ -2661,6 +2656,10 @@ function showItemMenu(node, x, y) {
     '-',
     { label: isPinned(node.id) ? '已在桌面上' : '置顶到桌面图标', run: () => pinIcon(node) },
     { label: '复制地址', run: async () => { const ok = await copyText(node.url); toast(ok ? '地址已复制' : '复制失败'); } },
+    ...(targets.length ? [{
+      label: '添加到',
+      children: targets.map((f) => ({ label: f.label, run: () => moveInto(node, f.id) })),
+    }] : []),
     '-',
     { label: '重命名', run: () => renameNode(node) },
     { label: '删除', danger: true, run: () => removeNode(node) },
@@ -2694,6 +2693,47 @@ function showFolderMenu(node, x, y) {
 async function setFolderModeThen(node, mode) {
   await setFolderMode(node, mode);
   render();
+}
+
+/* 卡片空白处（卡身 / 未分组卡的标题 / 放大层的卡面）的右键：
+   就是这张卡对应文件夹的功能菜单；「未分组」这种虚拟卡落到它所在的真实层，
+   书签栏本身不给重命名 / 删除 */
+function showZoneBlankMenu(node, x, y) {
+  const loose = node && node.id && String(node.id).startsWith('__loose__');
+  const target = loose ? (current() || state.bar) : node;
+  if (!target) return;
+  const isRoot = !!(state.bar && String(target.id) === String(state.bar.id));
+  const isReal = state.byId.has(target.id) && !isRoot;
+  const mode = modeOf(target);
+  const items = [
+    { label: '新建书签', run: () => createBookmark(target) },
+    { label: '新建子文件夹', run: () => createFolder(target) },
+    '-',
+    { label: '图标显示', on: mode === MODE_ICON, run: () => setFolderModeThen(target, MODE_ICON) },
+    { label: '列表显示', on: mode === MODE_LIST, run: () => setFolderModeThen(target, MODE_LIST) },
+    { label: '按名称排序', run: () => sortFolder(target) },
+  ];
+  if (isReal) {
+    items.push(
+      '-',
+      { label: '重命名', run: () => renameNode(target) },
+      { label: '删除', danger: true, run: () => removeNode(target) },
+    );
+  }
+  showMenu(x, y, items);
+}
+
+/* 页面空白处（桌面 / 顶栏 / 置顶栏空隙）的右键：书签栏这一层的常用操作 */
+function showStageMenu(x, y) {
+  const bar = state.bar;
+  showMenu(x, y, [
+    { label: '新建书签', run: () => createBookmark(bar) },
+    { label: '新建分组', run: () => createFolder(bar) },
+    { label: '按名称排序', run: () => sortFolder(bar) },
+    '-',
+    { label: '更换壁纸', run: () => toggleWallpaperPanel(true) },
+    { label: '布局同步', run: () => toggleSyncPanel(true) },
+  ]);
 }
 
 async function setItemMode(node, mode) {
@@ -3211,7 +3251,6 @@ function bindUI() {
 
   bindKeyboardFocusRing();
   bindStageDrop();
-  bindTrayDrop();
   bindExternalLinkDrop();
 
   // 拖文件进来：只认 .json / .txt 布局
@@ -3254,6 +3293,28 @@ function bindUI() {
     backdrop.addEventListener('click', () => closeZoom());
   }
 
+  // 放大层卡片空白处的右键 = 当前文件夹的功能菜单（只绑一次，卡内容每次重画）
+  const zoomCard = $('folderZoomCard');
+  if (zoomCard && !zoomCard.dataset.ctxBound) {
+    zoomCard.dataset.ctxBound = '1';
+    zoomCard.addEventListener('contextmenu', (e) => {
+      if (!state.zoom) return;
+      e.preventDefault();
+      e.stopPropagation();
+      showZoneBlankMenu(state.zoom, e.clientX, e.clientY);
+    });
+  }
+
+  // 页面空白处的右键：书签栏这一层的常用菜单。
+  // 输入框 / 各弹层 / 搜索框 / 放大层里不弹（保留原生或各自处理）；卡片和条目都有自己的菜单
+  document.addEventListener('contextmenu', (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('input, textarea, .modal, .wp-panel, .sync-panel, .help-card, .ctx, .engine-menu, .search, .folder-zoom, .zone, .tray-app, .item, .subfolder, .zoom-folder')) return;
+    e.preventDefault();
+    showStageMenu(e.clientX, e.clientY);
+  });
+
   // 桌面空白双击 / 单机 Esc 缩回上一层
   const stage = $('stage');
   if (stage) {
@@ -3293,7 +3354,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.7';
+    let ver = '2.1.0';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }
