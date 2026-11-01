@@ -1100,18 +1100,22 @@ const SITE_ICON = /(^|\.)(figma\.com|notion\.so|excalidraw\.com|miro\.com|vercel
 const SITE_LIST = /(^|\.)(zhihu\.com|juejin\.cn|sspai\.com|medium\.com|ycombinator\.com|reddit\.com|news\.|blog\.|weibo\.com|bilibili\.com)/i;
 const LIST_PATH = /(github\.com\/[^/]+\/[^/]+\/(blob|tree|issues|pull)|docs?\.|\.md$|\/(wiki|issue|post|article|p)\/)/i;
 
-/* 只按书签本身打分，不读 state —— 方便单独测 */
+/* 只按书签本身打分，不读 state —— 方便单独测。
+   v2.0.2 修正：原来 score 从 0 起步，而判图标要 >= 1，于是普通网址
+   （github / google / 百度 / 淘宝 …）永远停在 0 分，全被判成列表，
+   整个桌面看起来「自动显示全是列表」。改成从 +1 起步：**默认就是图标**，
+   只有站点性质 / 路径 / 标题确实像篇文章时，才一分一分扣到列表去。 */
 function inferMode(node) {
   const url = String((node && node.url) || '');
   if (!url) return MODE_ICON;
-  let score = 0;
+  let score = 1;
   const host = url.replace(/^[a-z]+:\/\//i, '').split(/[/?#]/)[0] || '';
   const rest = url.replace(/^[a-z]+:\/\/([^/?#]+)/i, '');
   // 站点性质
   if (SITE_LIST.test(host)) score -= 2;
   if (SITE_ICON.test(host)) score += 2;
   // 本地地址、内网后台：一律图标
-  if (/^(https?:\/\/)?(localhost|127\.0\.0\.1|192\.168\.|10\.)/i.test(url)) score += 2;
+  if (/^(https?:\/\/)?(localhost|127\.0\.0\.1|192\.168\.|10\.)/i.test(url)) score += 3;
   // 路径深度：/a/b 这种多半是具体页面
   if (LIST_PATH.test(rest) || /\.md$/i.test(rest)) score -= 2;
   const depth = (rest.split('/').filter(Boolean)).length;
@@ -1119,9 +1123,9 @@ function inferMode(node) {
   if (depth >= 3) score -= 1;
   // 标题长度：长的像文章
   const title = String((node && node.title) || '');
-  if (title.length >= 18) score -= 2;
-  else if (title.length >= 10) score -= 1;
-  // 平局判给列表（score >= 0 才是图标）
+  if (title.length >= 24) score -= 2;
+  else if (title.length >= 14) score -= 1;
+  // 平局判给列表（score >= 1 才是图标）
   return score >= 1 ? MODE_ICON : MODE_LIST;
 }
 
@@ -1466,7 +1470,20 @@ function buildZone(node, opts) {
   }
 
   if (items.length) {
-    if (modeOf(node) === MODE_LIST) {
+    /* 「未分组」这种合成卡的 id 是 `__loose__:1` 这种假 id，
+       folderModeInherit() 沿 parentId 往上走永远走不到它 —— 于是点了卡片上的
+       「图标显示」，外框变了，里面每条书签仍掉回 inferMode 判成列表。
+       这里让合成卡里的书签跟随这张卡：卡是图标就全图标，卡是列表就全列表。
+       单条书签自己设过的仍然优先（modeOf 的第一步就是查 views.items）。 */
+    const zoneMode = modeOf(node);
+    const looseKey = node.id ? String(node.id).startsWith('__loose__:') : false;
+    const pick = (it) => {
+      const own = state.views.items[it.id];
+      if (isMode(own)) return own;
+      return looseKey ? zoneMode : modeOf(it);
+    };
+    const listMode = pick(items[0]) === MODE_LIST;
+    if (listMode) {
       const grid = document.createElement('div');
       grid.className = 'zone-grid';
       items.forEach((it) => grid.appendChild(buildItem(it)));
@@ -2974,7 +2991,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.1';
+    let ver = '2.0.2';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }
