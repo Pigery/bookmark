@@ -506,6 +506,8 @@ body[data-light="1"] .bg-grain {
   color: var(--text-2);
 }
 .crumb .cur { color: var(--text); font-weight: var(--fw-3); padding: 3px 7px; }
+/* 分隔符是装饰，不承载信息 —— 用最淡的那档灰，别和可点的面包屑抢眼 */
+.crumb-sep { color: var(--text-3); font-size: var(--fs-1); user-select: none; }
 
 /* ============ 桌面 ============ */
 .stage {
@@ -1267,6 +1269,9 @@ body.is-dragging .zoom-folder {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+/* 应用传进来的输入框也带这个类（见 newtab.js promptText 的兜底分支），
+   这里只是一个语义别名，样式跟上面那条保持一致 */
+.modal-input { font-variant-numeric: tabular-nums; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .btn {
   height: 33px;
@@ -1540,6 +1545,13 @@ body.is-dragging .zoom-folder {
 .sync-preview .err { color: #c0322a; }
 .sync-preview .sync-confirm { width: 100%; margin-top: 9px; }
 .sync-preview .ok { color: #1f7a33; }
+/* 预览框底部那句「导入是整体覆盖」的提醒，比正文再小一档 */
+.sync-hint {
+  margin-top: 7px;
+  font-size: var(--fs-1);
+  line-height: 1.55;
+  color: #b06100;
+}
 
 /* ============ Toast ============ */
 .toast {
@@ -1804,6 +1816,15 @@ body.is-dragging .zoom-folder {
 .zone-head:focus-visible,
 .subfolder:focus-visible {
   outline: none;
+}
+/* 键盘模式下（body.kb-mode）连浏览器自带的焦点环也压掉，
+   统一交给 .kb-focus 那条 2px 描边，避免两层环叠在一起 */
+body.kb-mode .item:focus-visible,
+body.kb-mode .tray-app:focus-visible,
+body.kb-mode .zone-head:focus-visible,
+body.kb-mode .subfolder:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 /* ==========================================================

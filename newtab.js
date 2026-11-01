@@ -1,26 +1,35 @@
 'use strict';
 
 /* ==========================================================
-   书签桌面 · 新标签页
+   书签桌面 · 新标签页  newtab.js
    ----------------------------------------------------------
-   目录：
-     1. 公共工具           $ / storeGet / storeSet / toast
-     2. 数据               预置壁纸、模糊档位、书签树
-     3. 背景取色           纸跟着壁纸走，只换色相不动字
-     4. 桌面卡片           渲染一级分组、放大下钻、拖拽整理
-     5. 置顶栏与搜索       顶部的 App 图标横栏、多引擎搜索
-     6. 壁纸面板           预置壁纸 + 必应每日（含往期画廊）
-     7. 布局同步           导出 / 导入 / 分享文本 / GitHub
-     ========================================================== */
+   目录（v2 全量重写，功能与此前各版本完全对齐）：
+     1. 公共层             $ / storeGet / storeSet / toast / state
+     2. 数据               预置壁纸、模糊档位、搜索引擎、示例书签树
+     3. 纸跟着壁纸走       背景取色（色相 / 彩度 / 明度 / 透光）
+     4. 壁纸面板           渐变预设 + 必应每日（3×3 九宫格往期）
+     5. 布局同步           导出 / 导入 / 分享文本（纯离线）
+     6. 显示方式           图标 / 列表 + 自动推断（打分制）
+     7. 渲染               桌面卡片、放大层、置顶栏、搜索结果
+     8. 交互               拖拽（跨文件夹 / 换位置 / 置顶排序）、右键菜单
+     9. 启动               初始化与事件绑定
+
+   三条铁律（踩过坑，别再犯）：
+     a. 本文件顶层只有「声明」，任何函数调用都放在 main() 里，
+        且 main() 必须写在文件最后 —— 否则会 xxx is not defined。
+     b. 内部拖拽只用私有 MIME，绝不用 text/plain，否则会被当成
+        「从外面拖进来一个链接」，触发导入布局的误判。
+     c. 所有 DOM 类名必须能在 newtab.css 里找到，自创等于没样式。
+   ========================================================== */
+
+/* ---------------- 1. 公共层 ---------------- */
 
 const $ = (id) => document.getElementById(id);
 
-/* ---------------- 公共工具 ---------------- */
-
-/* 扩展里 index.html 这个名字不吉利，但还是叫 newtab；
-   存东西走 chrome.storage.local，直接用预览页面打开时退到 localStorage。
-   预览前缀 bd: 是为了不和别的本地页面打架。 */
+/* 扩展里走 chrome.storage.local；直接打开 newtab.html 预览时退到
+   localStorage，前缀 bd: 免得和别的本地页面打架 */
 const HAS_CHROME = typeof chrome !== 'undefined' && !!(chrome.storage && chrome.storage.local);
+const HAS_BOOKMARKS = HAS_CHROME && !!(chrome.bookmarks && chrome.bookmarks.getTree);
 
 async function storeGet(key, fallback) {
   try {
@@ -40,7 +49,7 @@ async function storeSet(key, val) {
     if (HAS_CHROME) { await chrome.storage.local.set({ [key]: val }); return; }
     localStorage.setItem('bd:' + key, JSON.stringify(val));
   } catch {
-    /* 存不进去就算了，界面上已经改过了，下次再存 */
+    /* 存不进去就算了：界面上已经改过，下次有动静再存 */
   }
 }
 
@@ -59,27 +68,30 @@ function toast(msg) {
   toastTick = setTimeout(() => el.classList.remove('on'), 1800);
 }
 
-/* 全局状态。视图相关的一切都在这儿，渲染函数只读它 */
+/* 全局状态：视图相关的一切都在这儿，渲染函数只读它 */
 const state = {
-  wallpaper: 'aurora',
-  wallBlur: 'mid',
-  engine: 'bing',
-  wallpaperBing: '',
-  bingList: [],
-  bingDay: 0,
-  bingTick: 0,
-  icons: [],
-  views: { v: 1, folders: {}, items: {} },
+  wallpaper: 'aurora',      // 渐变预设 id 或 'bing'
+  wallBlur: 'mid',          // 必应照片模糊档位
+  engine: 'bing',           // 当前搜索引擎
+  wallpaperBing: '',        // 当前生效的必应原图地址
+  bingList: [],             // 必应往期（3×3 九宫格数据）
+  bingDay: 0,               // 当前选中的天数：0=今天，1=昨天…
+  bingTick: 0,              // 面板打开时的刷新计时器
+  icons: [],                // 置顶清单，元素形如 { id, url, title, iconUrl }
+  views: { v: 1, folders: {}, items: {} }, // 显示方式：文件夹 / 书签各自覆盖
   tree: null,
-  byId: new Map(),
-  bar: null,
-  path: [],
-  query: '',
-  dragIcons: -1,
+  byId: new Map(),          // id → 节点
+  bar: null,                // 书签栏根节点
+  path: [],                 // 下钻路径（面包屑）
+  query: '',                // 搜索关键字
+  zoom: null,               // 放大层当前展示的文件夹
+  dragNode: null,           // 正在拖的东西
+  lastFocus: '',            // 重绘前的焦点身份证，画完还回去
 };
-/* ---------------- 数据：预置壁纸 ---------------- */
 
-/* 8 套渐变：深色 5、浅色 3。light:true 的会把整页配色切到浅色纸。
+/* ---------------- 2. 数据 ---------------- */
+
+/* 8 套渐变：深色 5、浅色 3。light:true 会把整页配色切到浅色纸。
    css 直接写进 #bg 的 background，不需要图片、不联网 */
 const WALLPAPERS = [
   { id: 'aurora', light: false, css: 'radial-gradient(120% 90% at 18% 8%, #2a3f6b 0%, #151c30 46%, #0b0f1a 100%)' },
@@ -93,137 +105,109 @@ const WALLPAPERS = [
 ];
 
 const WALL_BLURS = [
-  { id: 'off', label: '无' },
-  { id: 'lite', label: '轻' },
-  { id: 'mid', label: '中' },
-  { id: 'deep', label: '重' },
+  { id: 'off', label: '无', px: 0 },
+  { id: 'lite', label: '轻', px: 10 },
+  { id: 'mid', label: '中', px: 22 },
+  { id: 'deep', label: '重', px: 40 },
 ];
 
-/* ---------------- 数据：书签树 ---------------- */
+const ENGINES = [
+  { id: 'bing', name: '必应', logo: 'B', url: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}` },
+  { id: 'baidu', name: '百度', logo: '百', url: (q) => `https://www.baidu.com/s?wd=${encodeURIComponent(q)}` },
+  { id: 'google', name: 'Google', logo: 'G', url: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}` },
+  { id: 'sogou', name: '搜狗', logo: '搜', url: (q) => `https://www.sogou.com/web?query=${encodeURIComponent(q)}` },
+  { id: 'ddg', name: 'DuckDuckGo', logo: 'D', url: (q) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}` },
+];
 
-/* 有 chrome.bookmarks 就读真的，没有（双击 newtab.html 预览）就用一棵假树，
+const MODE_ICON = 'icon';
+const MODE_LIST = 'list';
+function isMode(v) { return v === MODE_ICON || v === MODE_LIST; }
+
+/* 没有 chrome.bookmarks（双击 newtab.html 预览）时用这棵假树，
    这样预览页也能看全所有状态 */
 function mockTree() {
   const mk = (id, title, children) => ({ id, title, children });
-  const leaf = (n, url) => ({ id: 'm' + n, title: url.replace(/^https?:\/\/(www\.)?/, '').split('/')[0], url });
-  return [mk('0', '', [
-    mk('1', '书签栏', [
-      mk('10', '前端', [
-        leaf(1, 'https://developer.mozilla.org'), leaf(2, 'https://caniuse.com'),
-        leaf(3, 'https://web.dev'), leaf(4, 'https://css-tricks.com'),
-        leaf(5, 'https://github.com'),
-      ]),
-      mk('11', '工具', [
-        leaf(6, 'https://www.figma.com'), leaf(7, 'https://excalidraw.com'),
-        leaf(8, 'https://regex101.com'), leaf(9, 'https://www.json.cn'),
-      ]),
-      mk('12', '阅读', [
-        leaf(10, 'https://sspai.com'), leaf(11, 'https://www.zhihu.com'),
-        leaf(12, 'https://news.ycombinator.com'),
-      ]),
-      mk('13', '设计', [
-        leaf(13, 'https://dribbble.com'), leaf(14, 'https://www.behance.net'),
-      ]),
+  const leaf = (n, title, url) => ({ id: 'm' + n, title, url });
+  const bar = mk('1', '书签栏', [
+    mk('10', '前端', [
+      leaf(1, 'MDN 文档', 'https://developer.mozilla.org'),
+      leaf(2, 'Can I use', 'https://caniuse.com'),
+      leaf(3, 'web.dev', 'https://web.dev'),
+      leaf(4, 'CSS-Tricks', 'https://css-tricks.com'),
     ]),
-  ])];
+    mk('11', '工具', [
+      leaf(5, 'Figma', 'https://www.figma.com'),
+      leaf(6, 'Excalidraw', 'https://excalidraw.com'),
+      leaf(7, 'RegExr', 'https://regex101.com'),
+      leaf(8, 'JSON 格式化', 'https://www.json.cn'),
+    ]),
+    mk('12', '阅读', [
+      leaf(9, '少数派', 'https://sspai.com'),
+      leaf(10, '知乎', 'https://www.zhihu.com'),
+      leaf(11, 'Hacker News', 'https://news.ycombinator.com'),
+    ]),
+    mk('13', '设计', [
+      leaf(12, 'Dribbble', 'https://dribbble.com'),
+      leaf(13, 'Behance', 'https://www.behance.net'),
+    ]),
+  ]);
+  return mk('0', '', [bar]);
 }
 
-/* chrome.bookmarks 的树 → 我们自己的结构，同时建 id → node 索引 */
-function indexTree(tree) {
-  const byId = new Map();
-  const walk = (node) => {
-    byId.set(node.id, node);
-    (node.children || []).forEach(walk);
-  };
-  walk(tree);
-  state.byId = byId;
-  return tree;
-}
-
-async function loadTree() {
-  if (HAS_CHROME && chrome.bookmarks && chrome.bookmarks.getTree) {
-    const [tree] = await chrome.bookmarks.getTree();
-    state.bar = (tree.children || []).find((c) => /书签栏|Bookmarks bar|Barre/i.test(c.title))
-      || (tree.children && tree.children[0]) || tree;
-    return indexTree(tree);
-  }
-  const tree = mockTree()[0];
-  state.bar = (tree.children || [])[0] || tree;
-  return indexTree(tree);
-}
-/* ==========================================================
-   背景取色（v1.20.5 重做）
-   壁纸是随机的，一张纯白的卡片贴在哪张照片上都格格不入。
-   这里从壁纸里取颜色，把「纸」本身染成壁纸的同色系：
-     --paper-warm   上沿：壁纸顶部偏暖，纸就偏暖
-     --paper-deep   下沿：壁纸底部偏沉，纸就多沉一档
-     --paper-solid  卡片实底（染成壁纸色相的一版浅纸）
+/* ---------------- 3. 纸跟着壁纸走 ----------------
+   壁纸是随机的，一张纯白的纸贴在哪张照片上都格格不入。
+   这里从壁纸里取色，把「纸」本身染成壁纸的同色系：
+     --paper-warm   上沿：照片顶上亮，纸就偏暖
+     --paper-deep   下沿：照片底下沉，纸就多沉一档
+     --paper-solid  卡片实底（不透明）
      --paper        卡片中间那层，带 alpha，让壁纸透上来
-     --paper-alpha  透明的程度
+     --paper-alpha  透多少
+   绝不碰 --ink / --text / --accent：字和身份不跟着壁纸漂。 */
 
-   上一版的毛病：只敢调色相，明度锁死在 0.94~0.965、饱和度封顶
-   0.42、不透明度压到 0.32~0.56 —— 结果所有壁纸都被压回同一个浅色，
-   深色壁纸一色、浅色壁纸另一色，中间几乎没有区别。
-
-   这一版的做法：
-     1. 色相：整张取平均色相关系，上沿 / 下沿各按最短角差调一半
-     2. 彩度：饱和度抬到 0.12~0.50（壁纸本身越彩，纸越彩）
-     3. 明度：死守 0.895~0.968 —— 白纸染了色还是纸，不是刷漆
-     4. 透光：卡片底下让出 10%~17% 的缝，壁纸自己的颜色从那道缝
-        透上来，卡片于是永远贴着它所在的那面墙
-   实测：不同壁纸的卡片之间色差 21~43 个色阶，黑字对比度最低 9.6:1
-   （WCAG AAA 是 7:1），看得清也读得清。
-
-   绝不碰 --ink / --text / --accent：字和身份不跟着壁纸漂。
-   ========================================================== */
 const TINT_SIZE = 48;            // 取样用的缩略图边长
-// 纸的饱和度区间：s=0.55 就视为「很热闹的壁纸」，不再往上加
-const TINT_S_REF = 0.55;
-const TINT_S_MIN = 0.2;
-const TINT_S_MAX = 0.5;
-// 纸压多少透明度给底下的壁纸。越热闹越敢透，太透字会晃眼
-const TINT_A_MIN = 0.42;
-const TINT_A_MAX = 0.62;
-// 纸明度下限：白纸染了色也还是纸。0.895 时最暗的彩纸 ≈ #e3e2f5，
-// 黑字对比度和背景差 9.6:1，WCAG AAA 要的是 7:1
-const TINT_L_FLOOR = 0.895;
+const TINT_S_REF = 0.55;         // s=0.55 就视为「很热闹的壁纸」，不再往上加
+const TINT_S_MIN = 0.2;          // 灰壁纸的纸彩度（再低就雪盲）
+const TINT_S_MAX = 0.5;          // 最彩的纸（再高就成彩色卡）
+const TINT_A_MIN = 0.42;         // 渐层透明度下限
+const TINT_A_MAX = 0.62;         // 渐层透明度上限
+const TINT_L_FLOOR = 0.895;      // 纸明度下限：白纸染了色还是纸
 
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 function hsl2rgb(h, s, l) {
-  h = ((h % 360) + 360) % 360 / 360;
+  const hn = ((h % 360) + 360) % 360 / 360;
   if (s <= 0) { const v = l * 255; return [v, v, v]; }
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
   const f = (t) => {
-    if (t < 0) t += 1;
-    if (t > 1) t -= 1;
-    if (t < 1 / 6) return p + (q - p) * 6 * t;
-    if (t < 1 / 2) return q;
-    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    let x = t;
+    if (x < 0) x += 1;
+    if (x > 1) x -= 1;
+    if (x < 1 / 6) return p + (q - p) * 6 * x;
+    if (x < 1 / 2) return q;
+    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
     return p;
   };
-  return [f(h + 1 / 3) * 255, f(h) * 255, f(h - 1 / 3) * 255];
-}
-
-const rgbaStr = (rgb, a) => `rgba(${rgb.map((v) => Math.round(clamp(v, 0, 255))).join(', ')}, ${a.toFixed(3)})`;
-
-/* #rrggbb + alpha → rgba()。卡片中间那层纸要用 */
-function rgbToRgba(hex, alpha) {
-  const n = parseInt(String(hex).slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  return [f(hn + 1 / 3) * 255, f(hn) * 255, f(hn - 1 / 3) * 255];
 }
 
 const rgbStr = (rgb) => '#' + rgb.map((v) => Math.round(clamp(v, 0, 255))
   .toString(16).padStart(2, '0')).join('');
 
-/* 从 RGBA 像素里算：整张的平均色 + 上沿 / 下沿各自的平均色。
-   上沿决定纸借谁的光（照片顶部是天空还是暗角），下沿决定纸吃多少影。 */
+const rgbaStr = (rgb, a) => `rgba(${rgb.map((v) => Math.round(clamp(v, 0, 255))).join(', ')}, ${a.toFixed(3)})`;
+
+/* #rrggbb + alpha → rgba() */
+function rgbToRgba(hex, alpha) {
+  const n = parseInt(String(hex).slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/* 从 RGBA 像素里算：整张平均色 + 上沿 / 下沿各自的平均色。
+   取平均而不是取某几个点 —— 免得恰好点在太阳或黑水上 */
 function analyzeThumb(data, size) {
   const n = size || TINT_SIZE;
   const cnt = n * n;
 
-  // 整张平均（取色相用）
   let r = 0; let g = 0; let b = 0;
   for (let i = 0; i < cnt; i += 1) {
     const p = i * 4;
@@ -231,7 +215,6 @@ function analyzeThumb(data, size) {
   }
   r /= cnt; g /= cnt; b /= cnt;
 
-  // 上沿 / 下沿各取 20% 高的一条，算平均亮度
   const band = Math.max(1, Math.round(n * 0.2));
   let topLum = 0; let botLum = 0;
   let tr = 0; let tg = 0; let tb = 0;
@@ -267,19 +250,15 @@ function analyzeThumb(data, size) {
     h *= 60;
   }
 
-  return {
-    r, g, b, h, s, l, topLum, botLum,
-    topRGB: [tr, tg, tb],
-    botRGB: [br, bg, bb],
-  };
+  return { r, g, b, h, s, l, topLum, botLum, topRGB: [tr, tg, tb], botRGB: [br, bg, bb] };
 }
 
-/* 角度差取最短的那一圈：350° 和 10° 只差 20°，不是 340° */
+/* 纯灰没有色相，返回 null，别硬塞一个 */
 function hueOf(rgb) {
   const mx = Math.max(rgb[0], rgb[1], rgb[2]) / 255;
   const mn = Math.min(rgb[0], rgb[1], rgb[2]) / 255;
   const d = mx - mn;
-  if (d < 0.0001) return null;   // 纯灰没有色相，别硬塞一个
+  if (d < 0.0001) return null;
   const [r, g, b] = rgb.map((v) => v / 255);
   let h;
   if (mx === r) h = ((g - b) / d + (g < b ? 6 : 0));
@@ -288,48 +267,46 @@ function hueOf(rgb) {
   return h * 60;
 }
 
+/* 最短角差：350° 和 10° 只差 20°，不是 340° */
 function blendHue(a, b, w) {
   if (a == null) return b;
   if (b == null) return a;
-  let d = ((b - a + 540) % 360) - 180;
+  const d = ((b - a + 540) % 360) - 180;
   return ((a + d * w) % 360 + 360) % 360;
 }
 
-/* 算出要写进 body 的变量。
-   返回 null 表示这张壁纸不适合取色（极黑 / 极白 / 灰阶），交回默认纸 */
+/* 算要写进 body 的变量。返回 null 表示这张壁纸不适合取色
+   （太黑 / 太亮 / 跨域读不到），交回 CSS 里写死的默认纸 */
 function paperTintVars(info) {
   if (!info) return null;
   const { s, l, h } = info;
-  // 太黑太亮的壁纸借不出颜色，硬借只会把纸弄脏
   if (!(l > 0.08 && l < 0.74)) return null;
 
-  const hueTop = hueOf(info.topRGB);
-  const hueBot = hueOf(info.botRGB);
+  const hueTop = hueOf(info.topRGB || [128, 128, 128]);
+  const hueBot = hueOf(info.botRGB || [128, 128, 128]);
   const hueMid = hueOf([info.r, info.g, info.b]);
 
   const warmH = blendHue(hueMid, hueTop, 0.65);
   const deepH = blendHue(hueMid, hueBot, 0.65);
 
-  // 彩度：照片的平均饱和度天生偏灰，抬 1.6 倍再映射，纸才看得出「是那个颜色」
-  // 灰阶壁纸（整张几乎无色）不能凭空生出颜色来，直接把彩度归零
   const grayish = s < 0.05;
   const sat = grayish ? 0 : clamp(s * 1.6 / TINT_S_REF, 0, 1);
   const cs = grayish ? 0 : TINT_S_MIN + (TINT_S_MAX - TINT_S_MIN) * sat;
 
-  // 明度：上沿贴着壁纸顶部亮度走，但两头都死守地板
-  const warmL = clamp(0.966 - (1 - info.topLum) * 0.055 - sat * 0.035, TINT_L_FLOOR, 0.966);
-  const deepL = clamp(0.936 - (1 - info.botLum) * 0.06 - sat * 0.03, TINT_L_FLOOR, 0.95);
-  // 下沿故意比上沿深一档，卡片才有「纸有厚度」的错觉
+  const topLum = info.topLum == null ? 0.5 : info.topLum;
+  const botLum = info.botLum == null ? 0.5 : info.botLum;
+  const warmL = clamp(0.966 - (1 - topLum) * 0.055 - sat * 0.035, TINT_L_FLOOR, 0.966);
+  const deepL = clamp(0.936 - (1 - botLum) * 0.06 - sat * 0.03, TINT_L_FLOOR, 0.95);
   const de = Math.min(deepL, warmL - 0.012);
 
   const solidL = clamp(warmL - 0.004, TINT_L_FLOOR, 0.97);
   const hueW = grayish ? 0 : (warmH == null ? h : warmH);
   const hueD = grayish ? 0 : (deepH == null ? h : deepH);
   const hueS = grayish ? 0 : (hueMid == null ? h : hueMid);
+
   const warm = hsl2rgb(hueW, cs, warmL);
   const deep = hsl2rgb(hueD, cs, de);
   const solid = hsl2rgb(hueS, cs * 0.9, solidL);
-
   const alpha = TINT_A_MIN + (TINT_A_MAX - TINT_A_MIN) * sat;
 
   return {
@@ -341,15 +318,17 @@ function paperTintVars(info) {
   };
 }
 
+const TINT_KEYS = ['--paper-warm', '--paper-deep', '--paper-solid', '--paper', '--paper-alpha'];
+
 function paintPaperTint(info) {
   const vars = paperTintVars(info);
   const b = document.body;
+  if (!b) return false;
   if (!vars) {
-    ['--paper-warm', '--paper-deep', '--paper-solid', '--paper', '--paper-alpha']
-      .forEach((k) => b.style.removeProperty(k));
+    TINT_KEYS.forEach((k) => b.style.removeProperty(k));
     return false;
   }
-  Object.keys(vars).forEach((k) => b.style.setProperty(k, vars[k]));
+  TINT_KEYS.forEach((k) => b.style.setProperty(k, vars[k]));
   return true;
 }
 
@@ -371,14 +350,14 @@ function sampleWallpaper(url) {
         const cv = document.createElement('canvas');
         cv.width = w; cv.height = h;
         const ctx = cv.getContext('2d', { willReadFrequently: true });
-        // 4:3 居中裁切再画，别把照片拉变形
-        const ar = (img.naturalWidth || img.width) / (img.naturalHeight || img.height) || 1.6;
-        let sw = img.naturalWidth || img.width;
-        let sh = img.naturalHeight || img.height;
-        if (ar > 1.33) { sw = sh * 1.33; } else { sh = sw / 1.33; }
-        ctx.drawImage(img, ((img.naturalWidth || sw) - sw) / 2, ((img.naturalHeight || sh) - sh) / 2, sw, sh, 0, 0, w, h);
-        const data = ctx.getImageData(0, 0, w, h).data;
-        finish(analyzeThumb(data, w));
+        // 4:3 居中裁切再画，和实际取景一致
+        const nw = img.naturalWidth || img.width;
+        const nh = img.naturalHeight || img.height;
+        let sw = nw;
+        let sh = nh;
+        if (nw / nh > 1.33) sw = nh * 1.33; else sh = nw / 1.33;
+        ctx.drawImage(img, (nw - sw) / 2, (nh - sh) / 2, sw, sh, 0, 0, w, h);
+        finish(analyzeThumb(ctx.getImageData(0, 0, w, h).data, w));
       } catch {
         finish(null);
       }
@@ -388,6 +367,7 @@ function sampleWallpaper(url) {
   });
 }
 
+/* 上次算过的色先上纸，再异步重算一次 —— 避免每次闪一下白纸再变色 */
 function restorePaperTint(saved) {
   if (saved && typeof saved === 'object' && saved.h != null) {
     const ok = paintPaperTint({
@@ -403,18 +383,16 @@ function restorePaperTint(saved) {
   paintPaperTint(null);
 }
 
-/* 换壁纸之后重新取一次色。必应照片跨域可能读不到像素，
-   读不到就清掉变量，卡片回到默认象牙纸 */
 async function refreshPaperTint() {
   if (state.wallpaper !== 'bing' || !state.wallpaperBing) {
     paintPaperTint(null);
-    storeSet('paperTint', null).catch(() => {});
+    await storeSet('paperTint', null);
     return;
   }
   const info = await sampleWallpaper(state.wallpaperBing);
   if (!info || !paintPaperTint(info)) {
     paintPaperTint(null);
-    storeSet('paperTint', null).catch(() => {});
+    await storeSet('paperTint', null);
     return;
   }
   await storeSet('paperTint', {
@@ -423,11 +401,30 @@ async function refreshPaperTint() {
     topRGB: info.topRGB, botRGB: info.botRGB,
   });
 }
-/* ---------------- 壁纸 ---------------- */
+
+/* ---------------- 4. 壁纸 ---------------- */
+
+function wpList() { return $('wpList'); }
+
+function paintWallBlur() {
+  const bg = $('bg');
+  if (!bg) return;
+  const b = WALL_BLURS.find((x) => x.id === state.wallBlur) || WALL_BLURS[2];
+  // 模糊会从边缘漏出虚边，放大一点刚好盖住
+  bg.style.filter = b.px ? `blur(${b.px}px)` : '';
+  bg.style.transform = b.px ? 'scale(1.08)' : '';
+  const opts = $('wpBlurOpts');
+  if (opts) [...opts.children].forEach((n) => n.classList.toggle('on', n.dataset.id === b.id));
+  const row = $('wpBlurRow');
+  if (row) row.hidden = state.wallpaper !== 'bing';
+}
 
 /* 套上一套壁纸。id 是渐变的 id，或者 'bing' 表示用必应照片 */
 function applyWallpaper(id) {
   const bg = $('bg');
+  const list = wpList();
+  if (!bg) return;
+
   if (id === 'bing' && state.wallpaperBing) {
     state.wallpaper = 'bing';
     bg.style.backgroundColor = '#10131c';
@@ -436,42 +433,45 @@ function applyWallpaper(id) {
     bg.style.backgroundPosition = 'center';
     bg.style.backgroundRepeat = 'no-repeat';
     document.body.dataset.light = '0';
-    [...wpList().children].forEach((n) => n.classList.toggle('on', false));
+    if (list) [...list.children].forEach((n) => n.classList.toggle('on', false));
     paintWallBlur();
     refreshPaperTint();
     return;
   }
+
   const wp = WALLPAPERS.find((w) => w.id === id) || WALLPAPERS[0];
   state.wallpaper = wp.id;
+  bg.style.backgroundColor = '';
+  bg.style.backgroundImage = 'none';
   bg.style.background = wp.css;
+  bg.style.backgroundSize = '';
+  bg.style.backgroundPosition = '';
+  bg.style.backgroundRepeat = '';
   document.body.dataset.light = wp.light ? '1' : '0';
-  [...wpList().children].forEach((n) => n.classList.toggle('on', n.dataset.id === wp.id));
+  if (list) [...list.children].forEach((n) => n.classList.toggle('on', n.dataset.id === wp.id));
   paintWallBlur();
   refreshPaperTint();
 }
 
-function wpList() { return $('wpList'); }
-
-function paintWallBlur() {
-  const bg = $('bg');
-  const table = { off: '0px', lite: '6px', mid: '14px', deep: '26px' };
-  bg.style.filter = `blur(${table[state.wallBlur] || '0px'})`;
-  const opts = $('wpBlurOpts');
-  if (opts) [...opts.children].forEach((n) => n.classList.toggle('on', n.dataset.id === state.wallBlur));
+async function pickWallpaper(id) {
+  applyWallpaper(id);
+  await storeSet('wallpaper', state.wallpaper);
 }
 
 function buildWallpaperPanel() {
   const box = wpList();
+  if (!box) return;
   box.innerHTML = '';
   WALLPAPERS.forEach((wp) => {
-    const d = document.createElement('div');
+    const d = document.createElement('button');
+    d.type = 'button';
     d.className = 'wp-item';
     d.dataset.id = wp.id;
     d.style.background = wp.css;
-    d.title = wp.id;
-    d.addEventListener('click', async () => {
-      applyWallpaper(wp.id);
-      if (HAS_CHROME && chrome.storage) await chrome.storage.local.set({ wallpaper: wp.id });
+    d.title = wp.light ? '浅色壁纸' : '深色壁纸';
+    d.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await pickWallpaper(wp.id);
       hideWallpaper();
     });
     box.appendChild(d);
@@ -489,37 +489,56 @@ function buildBlurRow() {
     d.className = 'wp-blur-opt';
     d.dataset.id = b.id;
     d.textContent = b.label;
-    d.addEventListener('click', async () => {
+    d.addEventListener('click', async (e) => {
+      e.stopPropagation();
       state.wallBlur = b.id;
       paintWallBlur();
       refreshPaperTint();
-      if (HAS_CHROME && chrome.storage) await chrome.storage.local.set({ wallBlur: b.id });
+      await storeSet('wallBlur', b.id);
     });
     opts.appendChild(d);
   });
   paintWallBlur();
 }
 
-/* ---------------- 必应每日壁纸 ---------------- */
-// 一次取最近 BING_DAYS 天：idx=0 是今天，idx 越大越旧。面板里排成 3×3 九宫格，
-// 想用哪天的点是哪张；「用今天的」按 idx=0 回切。
-// 取的是「今天 + 往前 8 天」正好 9 张，多出来的第 10 天不要——格子对不上反而难看
+function toggleWallpaperPanel(force) {
+  const panel = $('wpPanel');
+  if (!panel) return;
+  const open = force == null ? panel.hidden : !!force;
+  panel.hidden = !open;
+  clearInterval(state.bingTick);
+  if (open) {
+    loadBingPanel();
+    state.bingTick = setInterval(() => { if (!panel.hidden) loadBingPanel(); }, BING_CACHE_MS);
+  }
+}
+
+function hideWallpaper() {
+  const panel = $('wpPanel');
+  if (panel) panel.hidden = true;
+  clearInterval(state.bingTick);
+  state.bingTick = 0;
+}
+
+/* ---------- 必应每日壁纸 ----------
+   一次取最近 BING_DAYS 天：idx=0 是今天，idx 越大越旧；面板里排成 3×3。
+   取「今天 + 往前 8 天」正好 9 张，第 10 天不要 —— 格子对不上反而难看。 */
 const BING_DAYS = 9;
-// 有两套接口参数可以要历史：官方老接口用 idx，有的地区 / 版本要换成 xid。
-// 两个都试一遍，哪个先返回够用的就用哪个；都只剩一天就说明确实拿不到，不硬凑。
+/* 有两套接口参数可以要历史：官方老接口用 idx，有的地区 / 版本要换 xid。
+   两个都试一遍，哪个先返回够用的就用哪个 */
 const BING_ENDPOINTS = [
   (w, i) => `https://www.bing.com/HPImageArchive.aspx?format=js&n=${w}&mkt=zh-CN&idx=${i}`,
   (w, i) => `https://www.bing.com/HPImageArchive.aspx?format=js&n=${w}&mkt=zh-CN&xid=${i}`,
 ];
 const BING_CACHE_MS = 6 * 60 * 60 * 1000;
 
-// 缩略图参数：原图动辄 3~8MB，画廊里只要 320 宽就够看
+/* 缩略图参数：原图动辄 3~8MB，画廊里只要 320 宽就够看 */
 function bingThumb(url, w = 320) {
   return url.replace(/&w=\d+/, '').replace(/&h=\d+/, '') + `&w=${w}&h=${Math.round(w * 0.5625)}&rs=1`;
 }
 
-/* 一次请求要回最近 N 天。必应有时候只认 idx 不认 n、有时候反过来，
-   所以「要回 8 天却只给了 1 天」就当这次没成功，换下一套参数再试 */
+/* 一次请求要回 want 天。必应有时只认 idx 不认 n、有时反过来，
+   所以「要 8 天却只给 1 天」就当这次没成功，换下一套参数再试 */
 async function bingOnce(makeUrl, want, idx = 0) {
   const res = await fetch(makeUrl(want, idx));
   if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -539,7 +558,7 @@ async function bingOnce(makeUrl, want, idx = 0) {
   });
 }
 
-/* 一天一天地要：第 0 天、第 1 天……直到要重复为止。
+/* 一天一天地要：第 0 天、第 1 天……直到拿到重复的。
    单次请求的 n 在某些地区最多只给 8 条，按天问不受这个限制 */
 async function bingByDays(makeUrl) {
   const out = [];
@@ -558,13 +577,22 @@ async function bingByDays(makeUrl) {
   return out;
 }
 
+/* 往期去重用「URL 的查询串」而不是整条 URL：
+   缓存里存的可能是缩略图地址，只差 w/h 参数，整串比会认成两张 */
+function bingKey(url) {
+  const s = String(url || '');
+  const q = s.split('?')[1];
+  if (!q) return s;
+  return q.replace(/&(w|h|rs)=[^&]*/g, '');
+}
+
 async function fetchBingWallpaper(force = false) {
   const cached = await storeGet('bing', null);
-  // 缓存里记着「这份是按几天取的」（for_）。天数一改（比如 8→9）旧缓存直接作废，
+  // 缓存里记着「这份是按几天取的」（for_）。天数一改旧缓存直接作废，
   // 否则升级完打开看见的还是老画廊，得干等 6 小时缓存过期
   const fresh = cached && cached.ts && Date.now() - cached.ts < BING_CACHE_MS
     && cached.url && cached.list && cached.list.length
-    && cached.for === BING_DAYS;
+    && cached.for_ === BING_DAYS;
   if (!force && fresh) return cached;
   const prev = cached && cached.list ? cached.list : [];
 
@@ -573,28 +601,23 @@ async function fetchBingWallpaper(force = false) {
     try {
       list = await bingOnce(makeUrl, BING_DAYS);
       if (list.length > 1) break;
-    } catch (err) { /* 换下一套参数 */ }
+    } catch { /* 换下一套参数 */ }
   }
-  // 不够 9 张就走逐天兜底。必应在某些地区把 n 的上限卡在 8，
-  // 一次只能给 8 张——差的这一张必须自己按天补，不能指望参数
+  // 不够 9 张就走逐天兜底：必应把 n 的上限卡在 8，差的那一张得自己补
   if (list.length < BING_DAYS) {
     for (const makeUrl of BING_ENDPOINTS) {
       try {
         const viaDays = await bingByDays(makeUrl);
         if (viaDays.length > list.length) { list = viaDays; break; }
-      } catch (err) { /* 继续试 */ }
+      } catch { /* 继续试 */ }
     }
   }
-  // 只拿到今天：把之前存过的往期拼在后面，画廊不会凭空蒸发。
-  // 用 Set 去重——历史里可能已经存着「今天」这张了，否则会冒出两个「今天」
+  // 只拿到今天：把之前存过的往期拼在后面，画廊不会凭空蒸发
   if (list.length <= 1) {
     const today = list[0];
-    // 按「路径」去重而不是整条 URL：历史缓存里的可能是缩略图地址，
-    // 只差 w/h 参数，整串比会认成两张
-    const pathOf = (u) => String(u || '').split('?')[1] ? String(u).split('?')[1].replace(/&(w|h|rs)=[^&]*/g, '') : String(u || '');
-    const seen = new Set(today ? [pathOf(today.url)] : []);
+    const seen = new Set(today ? [bingKey(today.url)] : []);
     const rest = prev.filter((d) => {
-      const k = pathOf(d.url);
+      const k = bingKey(d.url);
       if (seen.has(k)) return false;
       seen.add(k);
       return true;
@@ -607,28 +630,16 @@ async function fetchBingWallpaper(force = false) {
   }
 
   const out = {
-    url: list[0].url,      // 今天的原图（老字段，别处还在用）
+    url: list[0].url,
     thumb: list[0].thumb,
     title: list[0].title,
     copyright: list[0].copyright,
     list,
-    for: BING_DAYS,        // 这份缓存是按几天取的
+    for_: BING_DAYS,
     ts: Date.now(),
   };
   await storeSet('bing', out);
   return out;
-}
-
-/* 画廊里点一张：立刻换上去，但不动「每日」这个意图本身。
-   也就是说「用今天的」按钮一直在，下次开新标签页还是回到当天那张。 */
-async function pickBingDay(day) {
-  state.wallpaperBing = day.url;
-  state.bingDay = day.idx;
-  applyWallpaper('bing');
-  await storeSet('wallpaper', 'bing');
-  await storeSet('bingDay', day.idx);
-  paintBingGallery();
-  toast(day.idx === 0 ? '已启用今天的必应壁纸' : `已切换到 ${bingDayLabel(day)} 的壁纸`);
 }
 
 function bingDayLabel(day) {
@@ -660,66 +671,74 @@ function paintBingGallery() {
     tag.className = 'wp-bing-tag';
     tag.textContent = day.idx === 0 ? '今天' : bingDayLabel(day);
     b.appendChild(tag);
-    b.addEventListener('click', () => pickBingDay(day));
+    b.addEventListener('click', (e) => { e.stopPropagation(); pickBingDay(day); });
     box.appendChild(b);
   });
-  if (metaEl) {
-    const cur = list.find((d) => d.idx === state.bingDay) || list[0];
-    metaEl.textContent = cur ? (cur.copyright || cur.title || '') : '';
-  }
+  const cur = list.find((d) => d.idx === state.bingDay) || list[0];
+  if (metaEl) metaEl.textContent = cur ? (cur.copyright || cur.title || '') : '';
+}
+
+/* 画廊里点一张：立刻换上去，但不动「跟随每日」这个意图本身，
+   所以「用今天的」按钮一直在，下次开新标签页还是回到当天那张 */
+async function pickBingDay(day) {
+  if (!day || !day.url) return;
+  state.wallpaperBing = day.url;
+  state.bingDay = day.idx;
+  applyWallpaper('bing');
+  await storeSet('wallpaper', 'bing');
+  await storeSet('bingDay', day.idx);
+  paintBingGallery();
+  toast(day.idx === 0 ? '已启用今天的必应壁纸' : `已切换到 ${bingDayLabel(day)} 的壁纸`);
 }
 
 async function loadBingPanel() {
   const metaEl = $('wpBingMeta');
   try {
     const b = await fetchBingWallpaper();
-    state.bingList = b.list || [{ idx: 0, url: b.url, thumb: b.thumb, title: b.title, copyright: b.copyright }];
+    state.bingList = (b.list && b.list.length)
+      ? b.list
+      : [{ idx: 0, url: b.url, thumb: b.thumb, title: b.title, copyright: b.copyright }];
     if (state.bingDay == null) state.bingDay = 0;
-    // 当前选的那天如果滚出列表了（比如停了半个月没开），退回今天
+    // 选的那天滚出 9 天窗口了（停了半个月没开），退回今天
     if (!state.bingList.some((d) => d.idx === state.bingDay)) state.bingDay = 0;
     const cur = state.bingList.find((d) => d.idx === state.bingDay) || state.bingList[0];
-    if (state.wallpaper === 'bing') state.wallpaperBing = cur.url;
+    if (state.wallpaper === 'bing' && cur) state.wallpaperBing = cur.url;
     paintBingGallery();
-  } catch (err) {
+  } catch {
     state.bingList = [];
     if (metaEl) metaEl.textContent = '';
     paintBingGallery();
   }
 }
 
-/* 「用今天的」：把选中的天数拉回 0 并立刻生效。它一直是可点的，
-   所以手动切到往期之后，随时能一步回到今日壁纸 */
 async function useTodayBing() {
   if (!state.bingList || !state.bingList.length) { toast('还没有取到今天的壁纸'); return; }
   const today = state.bingList.find((d) => d.idx === 0) || state.bingList[0];
   await pickBingDay(today);
 }
 
-function hideWallpaper() {
-  const panel = $('wpPanel');
-  if (panel) panel.hidden = true;
-  clearInterval(state.bingTick);
-}
-/* ---------------- 布局同步（导出 / 导入 / 分享文本） ---------------- */
-/* 只搬「怎么展示」：置顶图标顺序、图标 / 列表方式、壁纸、搜索引擎。
+/* ---------------- 5. 布局同步（导出 / 导入 / 分享文本） ----------------
+   只搬「怎么展示」：置顶图标顺序、图标 / 列表方式、壁纸、引擎、模糊档位。
    书签本身由浏览器自己同步，这里一根指头都不碰它。
 
    关键点：chrome.bookmarks 的 id 是每台设备本地分配的，同一份书签在
-   A 机和 B 机上的 id 完全不同，直接搬运 id 会全部错位。所以导出时先
-   把 id 翻译成跨设备稳定的标识——书签用规范化 URL，文件夹用
-   「书签栏/工具/前端」这样的标题路径——导入时再翻译回本机的 id。
-   文件里不出现任何 bookmark id，换浏览器 / 换设备都能对得上。 */
+   A 机和 B 机上 id 完全不同，直接搬 id 会全部错位。所以导出时先把 id
+   翻译成跨设备稳定的键 —— 书签用规范化 URL，文件夹用「书签栏/工具/前端」
+   这样的标题路径 —— 导入时再翻回本机的 id。文件里不出现任何 bookmark id。 */
+
 const LAYOUT_APP = 'bookmark-desktop-layout';
 const LAYOUT_SCHEMA = 1;
+const SHARE_PREFIX_GZ = 'bd1.';
+const SHARE_PREFIX_RAW = 'bd0.';
+const BD_MIME = 'application/x-bookmark-desktop';
 
 let pendingLayout = null;
 
-// 规范化 URL：去掉 hash、跟踪参数和多余尾斜杠，作为跨设备的书签标识
+/* 规范化 URL：去 hash、去跟踪参数、参数排序、去尾斜杠 */
 function normUrl(u) {
   try {
     const url = new URL(String(u));
     url.hash = '';
-    // 参数顺序不一致也要认成同一个地址，排序后再比
     url.searchParams.sort();
     [...url.searchParams.keys()].forEach((k) => {
       if (/^(utm_|spm|scm|from|share|ref|referrer|_t$)/i.test(k)) url.searchParams.delete(k);
@@ -734,8 +753,7 @@ function normUrl(u) {
   }
 }
 
-/* 文件夹的标题路径：从书签栏往下数着拼，「书签栏/工具/前端」。
-   标题重复的层级不纠结——同一个路径对应不稳定就干脆不导，宁可少还原一个 */
+/* 文件夹的标题路径：从书签栏往下数着拼 */
 function layoutFolderPaths() {
   const map = new Map();
   const walk = (node, prefix) => {
@@ -750,11 +768,7 @@ function layoutFolderPaths() {
   return map;
 }
 
-function layoutFolderPath(node) {
-  return (node && layoutFolderPaths().get(node.id)) || '';
-}
-
-/* 规范化 URL → 本机 id */
+/* 本机：规范化 URL → id（同一个 URL 只认第一个） */
 function layoutUrlIndex() {
   const map = new Map();
   state.byId.forEach((node) => {
@@ -765,7 +779,7 @@ function layoutUrlIndex() {
   return map;
 }
 
-/* 标题路径 → 本机 id */
+/* 本机：标题路径 → id */
 function layoutFolderIndex() {
   const map = new Map();
   layoutFolderPaths().forEach((path, id) => {
@@ -774,7 +788,7 @@ function layoutFolderIndex() {
   return map;
 }
 
-/* 导出：把本机的 id 全部换成稳定键 */
+/* 导出：把本机 id 全部换成稳定键 */
 function buildLayout() {
   const paths = layoutFolderPaths();
   const icons = [];
@@ -801,21 +815,19 @@ function buildLayout() {
     app: LAYOUT_APP,
     schema: LAYOUT_SCHEMA,
     exportedAt: new Date().toISOString(),
-    prefs: { wallpaper: state.wallpaper, wallBlur: state.wallBlur, engine: state.engine },
+    prefs: {
+      wallpaper: state.wallpaper,
+      wallBlur: state.wallBlur,
+      engine: state.engine,
+    },
     icons,
     views: { items, folders },
   };
 }
 
-const MODE_ICON = 'icon';
-const MODE_LIST = 'list';
-
-function isMode(v) { return v === MODE_ICON || v === MODE_LIST; }
-
-// 把布局翻译回本机的 id；对不上的条目直接跳过，不让它变成错误设置
+/* 把布局翻译回本机 id；对不上的条目跳过，不让它变成错误设置 */
 function resolveLayout(data) {
   const plan = { icons: [], items: {}, folders: {}, missIcons: 0, missViews: 0, prefs: {} };
-
   const urlIndex = layoutUrlIndex();
   const folderIndex = layoutFolderIndex();
 
@@ -852,10 +864,26 @@ function resolveLayout(data) {
   return plan;
 }
 
+function countViews(plan) {
+  return Object.keys(plan.items).length + Object.keys(plan.folders).length;
+}
+
 function syncResetPending() {
   pendingLayout = null;
   const p = $('syncPreview');
   if (p) { p.hidden = true; p.innerHTML = ''; }
+}
+
+function syncLines(plan) {
+  const lines = [];
+  lines.push(`置顶图标 ${plan.icons.length} 个${plan.missIcons ? `（${plan.missIcons} 个本机没有）` : ''}`);
+  lines.push(`显示方式 ${countViews(plan)} 项${plan.missViews ? `（${plan.missViews} 项对不上）` : ''}`);
+  const bits = [];
+  if (plan.prefs.wallpaper) bits.push(`壁纸 ${plan.prefs.wallpaper}`);
+  if (plan.prefs.wallBlur) bits.push(`模糊 ${plan.prefs.wallBlur}`);
+  if (plan.prefs.engine) bits.push(`搜索引擎 ${plan.prefs.engine}`);
+  if (bits.length) lines.push(`偏好 ${bits.join(' · ')}`);
+  return lines;
 }
 
 function renderSyncPreview(plan) {
@@ -863,15 +891,15 @@ function renderSyncPreview(plan) {
   if (!box) return;
   box.hidden = false;
   box.innerHTML = '';
-  const add = (html) => { const p = document.createElement('div'); p.innerHTML = html; box.appendChild(p); };
-  add(`置顶图标 <b>${plan.icons.length}</b> 个${plan.missIcons ? `（${plan.missIcons} 个本机没有）` : ''}`);
-  const nViews = Object.keys(plan.items).length + Object.keys(plan.folders).length;
-  add(`显示方式 <b>${nViews}</b> 项${plan.missViews ? `（${plan.missViews} 项对不上）` : ''}`);
-  const bits = [];
-  if (plan.prefs.wallpaper) bits.push(`壁纸 ${plan.prefs.wallpaper}`);
-  if (plan.prefs.wallBlur) bits.push(`模糊 ${plan.prefs.wallBlur}`);
-  if (plan.prefs.engine) bits.push(`搜索引擎 ${plan.prefs.engine}`);
-  if (bits.length) add(`偏好 ${bits.join(' · ')}`);
+  syncLines(plan).forEach((text) => {
+    const p = document.createElement('div');
+    p.textContent = text;
+    box.appendChild(p);
+  });
+  const tip = document.createElement('div');
+  tip.className = 'sync-hint';
+  tip.textContent = '导入是整体覆盖：本机多出来的置顶图标和显示方式会被清掉。';
+  box.appendChild(tip);
 }
 
 function renderSyncError(msg) {
@@ -912,15 +940,13 @@ async function applyResolvedLayout(plan) {
   } else {
     paintWallBlur();
   }
-  await draw();
-  toast(`已导入：置顶 ${state.icons.length} · 显示方式 ${Object.keys(state.views.items).length + Object.keys(state.views.folders).length}`);
+  draw();
+  paintTray();
+  toast(`已导入：置顶 ${state.icons.length} · 显示方式 ${countViews(plan)}`);
 }
 
-/* ---------------- 分享文本：gzip + base64url ---------------- */
-/* 前缀 bd1. 表示 gzip 过的，bd0. 表示没压的原文。
-   浏览器不给同步 API，但 Clipboard 能塞纯文本——压缩只是为了短一点 */
-const BD_MIME = 'application/x-bookmark-desktop-layout+json';
-
+/* ---------- 分享文本：gzip + base64url ----------
+   bd1. 表示 gzip 过的，bd0. 表示没压的原文 */
 function bytesToB64url(bytes) {
   let s = '';
   bytes.forEach((b) => { s += String.fromCharCode(b); });
@@ -936,24 +962,26 @@ function b64urlToBytes(str) {
 
 async function packLayout(layout) {
   const json = JSON.stringify(layout);
-  if (typeof CompressionStream === 'undefined') return 'bd0.' + bytesToB64url(new TextEncoder().encode(json));
-  const cs = new CompressionStream('gzip');
-  const stream = new Blob([json]).stream().pipeThrough(cs);
+  if (typeof CompressionStream === 'undefined') return SHARE_PREFIX_RAW + bytesToB64url(new TextEncoder().encode(json));
+  const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('gzip'));
   const buf = await new Response(stream).arrayBuffer();
-  return 'bd1.' + bytesToB64url(new Uint8Array(buf));
+  const packed = SHARE_PREFIX_GZ + bytesToB64url(new Uint8Array(buf));
+  // 只有几个置顶图标的小布局，gzip 头比省下来的还多，退回不压缩，不让它变大
+  if (packed.length >= SHARE_PREFIX_RAW.length + bytesToB64url(new TextEncoder().encode(json)).length) {
+    return SHARE_PREFIX_RAW + bytesToB64url(new TextEncoder().encode(json));
+  }
+  return packed;
 }
 
 async function unpackLayout(text) {
   const raw = String(text || '').trim();
   if (!raw) throw new Error('空文本');
-  if (raw.startsWith('bd1.')) {
+  if (raw.startsWith(SHARE_PREFIX_GZ)) {
     if (typeof DecompressionStream === 'undefined') throw new Error('这个浏览器不支持解压');
-    const bytes = b64urlToBytes(raw.slice(4));
-    const ds = new DecompressionStream('gzip');
-    const stream = new Blob([bytes]).stream().pipeThrough(ds);
+    const stream = new Blob([b64urlToBytes(raw.slice(4))]).stream().pipeThrough(new DecompressionStream('gzip'));
     return JSON.parse(await new Response(stream).text());
   }
-  if (raw.startsWith('bd0.')) {
+  if (raw.startsWith(SHARE_PREFIX_RAW)) {
     return JSON.parse(new TextDecoder().decode(b64urlToBytes(raw.slice(4))));
   }
   return JSON.parse(raw);
@@ -988,49 +1016,47 @@ function downloadLayout(layout) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
-function showSyncPanel() {
+function toggleSyncPanel(force) {
   const p = $('syncPanel');
-  syncResetPending();
-  if (p) p.hidden = false;
-}
-
-function hideSync() {
-  const p = $('syncPanel');
-  if (p) p.hidden = true;
-  syncResetPending();
+  if (!p) return;
+  const open = force == null ? p.hidden : !!force;
+  p.hidden = !open;
+  if (!open) syncResetPending();
 }
 
 /* 判断一段文本是不是布局：先试 JSON，再看 app 标记 */
 function looksLikeLayout(text) {
+  const raw = String(text || '').trim();
+  if (/^bd[01]\./.test(raw)) return true;
   try {
-    const o = JSON.parse(String(text || ''));
+    const o = JSON.parse(raw);
     return !!(o && o.app === LAYOUT_APP);
   } catch {
-    return /^bd[01]\./.test(String(text || '').trim());
+    return false;
   }
+}
+
+function isLayoutObject(data) {
+  return !!(data && data.app === LAYOUT_APP);
 }
 
 function checkLayoutFile(file) {
   if (!file) return false;
-  if (/\.json$/i.test(file.name || '')) return true;
-  return file.type === 'application/json';
+  if (/\.(json|txt)$/i.test(file.name || '')) return true;
+  return file.type === 'application/json' || file.type === 'text/plain';
 }
 
-function dragHint(on) {
-  const body = document.body;
-  body.classList.toggle('is-dragging', !!on);
+function setDropHint(on) {
+  const hint = $('dropHint');
+  if (hint) hint.hidden = !on;
+  document.body.classList.toggle('is-dragging', !!on && !state.dragNode);
 }
 
-async function importLayoutFile(file) {
-  if (!checkLayoutFile(file)) { toast('只认 .json 布局文件'); return; }
-  const text = await file.text();
-  await startPreview(text);
-}
-
-/* 拖进来的是文件而不是页面里的元素？图片和文本也按文件处理 */
+/* 拖进来的是文件而不是页面里的元素？ */
 function isFilesDrag(e) {
+  if (state.dragNode) return false;           // 内部拖拽一律不参与导入
   const types = (e.dataTransfer && e.dataTransfer.types) || [];
-  if (types.indexOf(BD_MIME) >= 0) return false;
+  if (Array.prototype.indexOf.call(types, BD_MIME) >= 0) return false;
   return Array.prototype.indexOf.call(types, 'Files') >= 0;
 }
 
@@ -1038,190 +1064,172 @@ function isFilesDrag(e) {
 async function startPreview(text) {
   let data;
   try {
-    data = looksLikeLayout(text) && /^bd[01]\./.test(String(text).trim()) ? await unpackLayout(text) : JSON.parse(text);
-  } catch (err) {
+    data = await unpackLayout(text);
+  } catch {
     renderSyncError('这份内容读不出来，可能不是布局文本');
+    toggleSyncPanel(true);
     return;
   }
-  if (!data || data.app !== LAYOUT_APP) { renderSyncError('不是书签桌面的布局文件'); return; }
-  if (Number(data.schema) > LAYOUT_SCHEMA) { renderSyncError('这份布局比当前版本新，先升级扩展'); return; }
+  if (!isLayoutObject(data)) { renderSyncError('不是书签桌面的布局文件'); toggleSyncPanel(true); return; }
+  if (Number(data.schema) > LAYOUT_SCHEMA) { renderSyncError('这份布局比当前版本新，先升级扩展'); toggleSyncPanel(true); return; }
   const plan = resolveLayout(data);
-  const total = plan.icons.length + Object.keys(plan.items).length + Object.keys(plan.folders).length;
-  if (!total && !plan.prefs.wallpaper && !plan.prefs.engine) {
+  const total = plan.icons.length + countViews(plan);
+  const hasPrefs = !!(plan.prefs.wallpaper || plan.prefs.engine || plan.prefs.wallBlur);
+  if (!total && !hasPrefs) {
     renderSyncError('这份布局里没有本机对得上的内容');
+    toggleSyncPanel(true);
     return;
   }
   pendingLayout = plan;
-  const panel = $('syncPanel');
-  if (panel) panel.hidden = false;
+  toggleSyncPanel(true);
   renderSyncPreview(plan);
 }
 
-/* ---------------- 键盘提示 ---------------- */
-function toggleKeyHint(force) {
-  const card = $('helpCard');
-  if (!card) return;
-  card.hidden = force == null ? !card.hidden : !force;
+async function importLayoutFile(file) {
+  if (!checkLayoutFile(file)) { toast('只认 .json / .txt 布局文件'); return; }
+  const text = await file.text();
+  await startPreview(text);
 }
 
-/* ---------------- 时钟 ---------------- */
-function tickClock() {
-  const t = $('clockTime');
-  const d = $('clockDate');
-  if (!t || !d) return;
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  t.textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  const wd = '日一二三四五六'[now.getDay()];
-  d.textContent = `${now.getMonth() + 1} 月 ${now.getDate()} 日 周${wd}`;
-}
-/* ---------------- 渲染 ---------------- */
+/* ---------------- 6. 显示方式：图标 / 列表 ----------------
+   优先级：单条书签 > 文件夹 > 自动推断。
+   自动推断只看三件事：站点性质、路径深度、标题长度。
+   平局判给列表 —— 文章被压成方块会丢掉标题，代价比反过来大。 */
 
-/* 显示方式：书签和文件夹都能单独选图标 / 列表。
-   没设过就按站点性质猜——工具类用图标，文章类用列表 */
-const ENGINES = [
-  { id: 'bing', name: '必应', logo: 'B', url: (q) => `https://www.bing.com/search?q=${encodeURIComponent(q)}` },
-  { id: 'baidu', name: '百度', logo: '百', url: (q) => `https://www.baidu.com/s?wd=${encodeURIComponent(q)}` },
-  { id: 'google', name: 'Google', logo: 'G', url: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}` },
-  { id: 'sogou', name: '搜狗', logo: '搜', url: (q) => `https://www.sogou.com/web?query=${encodeURIComponent(q)}` },
-  { id: 'ddg', name: 'DuckDuckGo', logo: 'D', url: (q) => `https://duckduckgo.com/?q=${encodeURIComponent(q)}` },
-];
+const SITE_ICON = /(^|\.)(figma\.com|notion\.so|excalidraw\.com|miro\.com|vercel\.com|netlify\.app|localhost|127\.0\.0\.1|192\.168\.)/i;
+const SITE_LIST = /(^|\.)(zhihu\.com|juejin\.cn|sspai\.com|medium\.com|ycombinator\.com|reddit\.com|news\.|blog\.|weibo\.com|bilibili\.com)/i;
+const LIST_PATH = /(github\.com\/[^/]+\/[^/]+\/(blob|tree|issues|pull)|docs?\.|\.md$|\/(wiki|issue|post|article|p)\/)/i;
 
-function paintEngine() {
-  const e = ENGINES.find((x) => x.id === state.engine) || ENGINES[0];
-  const logo = $('engineLogo');
-  const name = $('engineName');
-  const input = $('searchInput');
-  if (logo) logo.textContent = e.logo;
-  if (name) name.textContent = e.name;
-  if (input) input.placeholder = `搜索书签，回车用${e.name}搜索`;
-  const menu = $('engineMenu');
-  if (menu) {
-    menu.innerHTML = '';
-    ENGINES.forEach((x) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      if (x.id === state.engine) b.classList.add('on');
-      b.textContent = x.name;
-      b.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        state.engine = x.id;
-        paintEngine();
-        await storeSet('engine', x.id);
-        menu.hidden = true;
-      });
-      menu.appendChild(b);
-    });
-  }
-}
-
-function applyEngine(id) {
-  state.engine = ENGINES.some((e) => e.id === id) ? id : 'bing';
-  paintEngine();
-}
-
-function openUrl(url, newTab) {
-  if (!url) return;
-  if (newTab) {
-    if (HAS_CHROME && chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url });
-    else window.open(url, '_blank');
-    return;
-  }
-  if (HAS_CHROME && chrome.tabs && chrome.tabs.update) {
-    chrome.tabs.update({ url }, () => {
-      if (chrome.runtime && chrome.runtime.lastError) window.location.href = url;
-    });
-  } else {
-    window.location.href = url;
-  }
-}
-
-function runSearch() {
-  const input = $('searchInput');
-  const q = (input && input.value || '').trim();
-  if (!q) return;
-  const e = ENGINES.find((x) => x.id === state.engine) || ENGINES[0];
-  openUrl(e.url(q), false);
-}
-
-/* 图标方块里的字：域名首个字母 */
-function iconOf(node) {
-  const host = String(node.url || '').replace(/^https?:\/\/(www\.)?/, '').split(/[/?#]/)[0];
-  return (host[0] || '?').toUpperCase();
+/* 只按书签本身打分，不读 state —— 方便单独测 */
+function inferMode(node) {
+  const url = String((node && node.url) || '');
+  if (!url) return MODE_ICON;
+  let score = 0;
+  const host = url.replace(/^[a-z]+:\/\//i, '').split(/[/?#]/)[0] || '';
+  const rest = url.replace(/^[a-z]+:\/\/([^/?#]+)/i, '');
+  // 站点性质
+  if (SITE_LIST.test(host)) score -= 2;
+  if (SITE_ICON.test(host)) score += 2;
+  // 本地地址、内网后台：一律图标
+  if (/^(https?:\/\/)?(localhost|127\.0\.0\.1|192\.168\.|10\.)/i.test(url)) score += 2;
+  // 路径深度：/a/b 这种多半是具体页面
+  if (LIST_PATH.test(rest) || /\.md$/i.test(rest)) score -= 2;
+  const depth = (rest.split('/').filter(Boolean)).length;
+  if (depth >= 2) score -= 1;
+  if (depth >= 3) score -= 1;
+  // 标题长度：长的像文章
+  const title = String((node && node.title) || '');
+  if (title.length >= 18) score -= 2;
+  else if (title.length >= 10) score -= 1;
+  // 平局判给列表（score >= 0 才是图标）
+  return score >= 1 ? MODE_ICON : MODE_LIST;
 }
 
 function modeOf(node) {
+  if (!node) return MODE_ICON;
   const m = node.url ? state.views.items[node.id] : state.views.folders[node.id];
   if (isMode(m)) return m;
-  // 猜：文章 / 博客 / 文档类默认列表，工具类默认图标
-  const host = String(node.url || '');
   if (!node.url) return MODE_ICON;
-  return /(zhihu|sspai|medium|blog|news|github\.com\/[^/]+\/blob|docs\.)/i.test(host) ? MODE_LIST : MODE_ICON;
+  return inferMode(node);
+}
+
+/* 给文件夹改显示方式：文件夹覆盖会连带影响里面没手动设过的书签 */
+async function setFolderMode(node, mode) {
+  if (!node || !node.id) return;
+  state.views.folders[node.id] = mode;
+  await storeSet('views', state.views);
+}
+
+/* 让「文件夹设成列表后，里面新加的书签也跟着是列表」成立：
+   往上找最近一个设过的祖先文件夹 */
+function folderModeInherit(node) {
+  let p = node && node.parentId ? state.byId.get(node.parentId) : null;
+  while (p) {
+    const m = state.views.folders[p.id];
+    if (isMode(m)) return m;
+    p = p.parentId ? state.byId.get(p.parentId) : null;
+  }
+  return null;
+}
+
+/* ---------------- 7. 渲染 ---------------- */
+
+/* ---------- 7.1 书签树 ---------- */
+function indexTree(tree) {
+  const byId = new Map();
+  const walk = (node, parentId) => {
+    if (parentId != null) node.parentId = parentId;
+    byId.set(node.id, node);
+    (node.children || []).forEach((c) => walk(c, node.id));
+  };
+  walk(tree, null);
+  state.byId = byId;
+  return tree;
+}
+
+async function loadTree() {
+  if (HAS_BOOKMARKS) {
+    const [tree] = await chrome.bookmarks.getTree();
+    state.bar = (tree.children || []).find((c) => /书签栏|Bookmarks bar|Barre/i.test(c.title))
+      || (tree.children && tree.children[0]) || tree;
+    state.tree = indexTree(tree);
+    return state.tree;
+  }
+  const tree = mockTree();
+  state.bar = (tree.children || [])[0] || tree;
+  state.tree = indexTree(tree);
+  return state.tree;
 }
 
 function childrenOf(node) { return (node && node.children) || []; }
 function linksOf(node) { return childrenOf(node).filter((c) => c.url); }
 function foldersOf(node) { return childrenOf(node).filter((c) => !c.url); }
+function current() { return state.path.length ? state.path[state.path.length - 1] : state.bar; }
 
-/* ---------------- 渲染：卡片 / 图标 / 列表 / 子文件夹 / 放大层 ----------------
-   这一层必须严格对齐 newtab.css 里已有的结构：
-     .stage > .zones
-       └ .zone[data-kind][data-id]
-          ├ .zone-head (openable / draggable)
-          │   ├ .zone-dot / .zone-title / .zone-count
-          │   └ .zone-view（显示方式）/ .zone-open（打开箭头）
-          └ .zone-body
-             ├ .subfolder-list > .subfolder > .subfolder-ico / .subfolder-copy
-             └ .tile-band > .item.tile  或  .zone-grid > .item(.folder-item)
-   放大层：.folder-zoom > .folder-zoom-card > .zoom-head + .zoom-content
-   类名一个都不能自创，自创就等于没样式。 */
+/* 图标方块里的字：域名首个字母 */
+function iconOf(node) {
+  const host = String((node && node.url) || '').replace(/^[a-z]+:\/\/(www\.)?/i, '').split(/[/?#]/)[0];
+  return (host[0] || '?').toUpperCase();
+}
 
-/* ============================================================================
-   渲染层 v2 —— 严格以 newtab.css 为唯一依据
+/* Chrome 的 _favicon 接口：有就用真 favicon，没有就退字母印章 */
+function faviconOf(url) {
+  if (!HAS_CHROME || !chrome.runtime || !chrome.runtime.getURL) return '';
+  try {
+    const u = new URL(chrome.runtime.getURL('/_favicon/'));
+    u.searchParams.set('pageUrl', String(url));
+    u.searchParams.set('size', '32');
+    return u.toString();
+  } catch {
+    return '';
+  }
+}
 
-   CSS 里定好的容器关系（不是我猜的，是读出来的）：
-
-   .stage (flex column, padding 14px 26px 44px)
-     └ .zones (grid auto-fit minmax(318px,1fr), auto-rows 1fr, gap 16, height 100%)
-         └ .zone  ← 一张相纸卡片
-            ├ .zone-head          ← 书脊：.zone-dot .zone-title .zone-count [.zone-view] [.zone-open]
-            └ .zone-body (overflow-y auto, flex column)
-               ├ .subfolder-list  ← 子文件夹（.subfolder 无描边，靠 hover 底色）
-               ├ .tile-band       ← 图标模式（.item.tile 66px 竖排）
-               └ .zone-grid       ← 列表模式（.item 横向）
-
-   .folder-zoom
-     ├ .folder-zoom-backdrop
-     └ .folder-zoom-card
-        ├ .zoom-head (.zoom-identity > .zoom-icon .zoom-title | .zoom-meta | .zoom-close)
-        └ .zoom-content
-           ├ .zoom-folders > .zoom-folder
-           └ .zoom-list / .tile-band
-
-   .tray > .tray-apps > .tray-app > .tray-ico + .tray-name
-
-   关键规则（从 CSS 反推出来的「设计意图」）：
-   1. .zones 是 auto-fit grid —— 每个文件夹=一张卡，卡会自动铺满、等高。
-   2. .zone[data-kind="folder"] 才有 hover 抬升和 .zone-head.openable 的「打开」提示。
-   3. 散落书签（不属于任何文件夹）单独成一张卡，data-kind="group"。
-   4. .zone.is-empty 时 .zone-empty 是 absolute 定位盖住主体。
-   5. .zone-view 显示的图标 = 「点一下会变成什么」（当前列表→显示图标）
-   ============================================================================ */
-
+/* ---------- 7.2 图标小件 ---------- */
 const SVG_ARROW = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const SVG_BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const SVG_FOLDER = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
 const SVG_LIST = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 const SVG_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
 const SVG_CLOSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
-/* ---------- 图标 ----------
-   CSS 里 .ico 是 18×18、.tile-ico 是 38×38（内 padding 7px）。
-   有 favicon 用 img，没有就用 .letter 字母印章（CSS 里 .ico .letter / .tile-ico .letter 都有样式） */
+function letterBlock(ch) {
+  const s = document.createElement('span');
+  s.className = 'letter';
+  let h = 0;
+  for (let i = 0; i < ch.length; i += 1) h = (h * 31 + ch.charCodeAt(i)) % 360;
+  s.style.background = `hsl(${h}, 52%, 52%)`;
+  s.textContent = ch;
+  return s;
+}
+
+/* 有 favicon 用 img，加载失败就换字母印章 */
 function paintIcon(box, node) {
   box.innerHTML = '';
-  if (node.iconUrl) {
+  const src = node.iconUrl || faviconOf(node.url);
+  if (src) {
     const img = document.createElement('img');
-    img.src = node.iconUrl;
+    img.src = src;
     img.alt = '';
     img.referrerPolicy = 'no-referrer';
     img.addEventListener('error', () => {
@@ -1234,30 +1242,44 @@ function paintIcon(box, node) {
   box.appendChild(letterBlock(iconOf(node)));
 }
 
-const letterBlock = (ch) => {
-  const s = document.createElement('span');
-  s.className = 'letter';
-  let h = 0;
-  for (let i = 0; i < ch.length; i++) h = (h * 31 + ch.charCodeAt(i)) % 360;
-  s.style.background = `hsl(${h}, 52%, 52%)`;
-  s.textContent = ch;
-  return s;
-};
-
-/* 文件夹图标：CSS 里 .ico.folder 取消了 border-radius 和 overflow，
-   说明文件夹图标就是不裁切的 SVG */
 function folderBlock() {
   const s = document.createElement('span');
-   s.className = 'ico folder';
+  s.className = 'ico folder';
   s.innerHTML = SVG_FOLDER;
   return s;
 }
 
-/* ---------- 一条书签（列表行） ---------- */
+/* ---------- 7.3 书签条目 ---------- */
+function hexId(n) {
+  let h = 2166136261;
+  const s = String(n);
+  for (let i = 0; i < s.length; i += 1) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return 'n' + (h >>> 0).toString(36);
+}
+
+function bindOpen(el, node) {
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openUrl(node.url, e.ctrlKey || e.metaKey);
+  });
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showItemMenu(node, e.clientX, e.clientY);
+  });
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      openUrl(node.url, e.ctrlKey || e.metaKey);
+    }
+  });
+}
+
 function buildItem(node) {
   const el = document.createElement('div');
   el.className = 'item';
-  el.dataset.id = node.id;
+  el.dataset.fid = hexId(node.id);
   el.tabIndex = 0;
   el.draggable = true;
 
@@ -1268,27 +1290,18 @@ function buildItem(node) {
   const label = document.createElement('span');
   label.className = 'label';
   label.textContent = node.title || node.url;
+  label.title = `${node.title || ''}\n${node.url || ''}`.trim();
 
   el.append(ico, label);
-
-  el.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openUrl(node.url, e.ctrlKey || e.metaKey);
-  });
-  el.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    showItemMenu(node, e.clientX, e.clientY);
-  });
+  bindOpen(el, node);
   bindItemDrag(el, node);
   return el;
 }
 
-/* ---------- 一条书签（图标方块） ---------- */
 function buildTile(node) {
   const el = document.createElement('div');
   el.className = 'item tile';
-  el.dataset.id = node.id;
+  el.dataset.fid = hexId(node.id);
   el.tabIndex = 0;
   el.draggable = true;
 
@@ -1299,29 +1312,19 @@ function buildTile(node) {
   const name = document.createElement('span');
   name.className = 'tile-name';
   name.textContent = node.title || node.url;
+  name.title = node.title || node.url;
 
   el.append(ico, name);
-
-  el.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openUrl(node.url, e.ctrlKey || e.metaKey);
-  });
-  el.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    showItemMenu(node, e.clientX, e.clientY);
-  });
+  bindOpen(el, node);
   bindItemDrag(el, node);
   return el;
 }
 
-/* ---------- 子文件夹入口 ----------
-   CSS：.subfolder 无描边、hover 才出底色；
-   .subfolder-copy 是 baseline 对齐的 flex（名字 + 计数并排） */
+/* 子文件夹入口：无描边，hover 才出底色 */
 function buildSubfolder(node) {
   const el = document.createElement('div');
   el.className = 'subfolder';
-  el.dataset.id = node.id;
+  el.dataset.fid = hexId(node.id);
   el.tabIndex = 0;
   el.draggable = true;
 
@@ -1349,17 +1352,24 @@ function buildSubfolder(node) {
 
   el.append(ico, copy, arrow);
 
-  el.addEventListener('click', (e) => {
+  el.addEventListener('click', (e) => { e.stopPropagation(); enter(node); });
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      enter(node);
+    }
+  });
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
     e.stopPropagation();
-    enter(node);
+    showFolderMenu(node, e.clientX, e.clientY);
   });
   bindSubDrag(el, node);
   return el;
 }
 
-/* ---------- 显示方式开关 ----------
-   CSS 注释写明：「图标显示『点一下会变成什么』」
-   所以：当前是列表 → 显示「图标」图标；当前是图标 → 显示「列表」图标 */
+/* 显示方式开关：图标显示的是「点一下会变成什么」 */
 function buildViewToggle(node) {
   const el = document.createElement('button');
   el.type = 'button';
@@ -1367,23 +1377,22 @@ function buildViewToggle(node) {
   const listMode = modeOf(node) === MODE_LIST;
   el.innerHTML = listMode ? SVG_ICON : SVG_LIST;
   el.title = listMode ? '换成图标显示' : '换成列表显示';
-  el.addEventListener('click', (e) => {
+  el.addEventListener('click', async (e) => {
     e.stopPropagation();
     e.preventDefault();
-    state.views.folders[node.id] = listMode ? MODE_ICON : MODE_LIST;
-    storeSet('views', state.views);
-    draw();
+    await setFolderMode(node, listMode ? MODE_ICON : MODE_LIST);
+    render();
   });
   return el;
 }
 
-/* ---------- 一张相纸卡片 ---------- */
+/* ---------- 7.4 一张相纸卡片 ---------- */
 function buildZone(node, opts) {
   const openable = !!(opts && opts.openable);
   const zone = document.createElement('section');
   zone.className = 'zone';
-  zone.dataset.id = node.id;
   zone.dataset.kind = openable ? 'folder' : 'group';
+  if (node.id) zone.dataset.fid = hexId(node.id);
 
   const subs = foldersOf(node);
   const items = linksOf(node);
@@ -1393,6 +1402,7 @@ function buildZone(node, opts) {
   /* ---- 书脊 ---- */
   const head = document.createElement('header');
   head.className = openable ? 'zone-head openable' : 'zone-head';
+  head.tabIndex = 0;
 
   const dot = document.createElement('span');
   dot.className = 'zone-dot';
@@ -1400,6 +1410,7 @@ function buildZone(node, opts) {
   const title = document.createElement('span');
   title.className = 'zone-title';
   title.textContent = node.title || '未命名';
+  title.title = node.title || '未命名';
 
   const count = document.createElement('span');
   count.className = 'zone-count';
@@ -1407,22 +1418,30 @@ function buildZone(node, opts) {
 
   head.append(dot, title, count);
 
-  if (!openable) head.appendChild(buildViewToggle(node));
+  if (linksOf(node).length) head.appendChild(buildViewToggle(node));
 
   if (openable) {
     const open = document.createElement('span');
     open.className = 'zone-open';
     open.innerHTML = SVG_ARROW;
     head.appendChild(open);
-    head.addEventListener('click', (e) => {
-      e.stopPropagation();
-      enter(node);
+    head.addEventListener('click', (e) => { e.stopPropagation(); enter(node); });
+    head.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        enter(node);
+      }
     });
+    head.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showFolderMenu(node, e.clientX, e.clientY);
+    });
+    // 标题栏就是拖拽把手（CSS 里 .zone-head[draggable="true"] 是 grab 手型）
+    head.draggable = true;
+    bindZoneDrag(head, zone, node);
   }
-
-  // CSS: .zone-head[draggable="true"] 是 grab 手型 —— 标题栏就是拖拽把手
-  head.draggable = true;
-  bindZoneDrag(head, zone, node);
 
   /* ---- 主体 ---- */
   const body = document.createElement('div');
@@ -1436,8 +1455,7 @@ function buildZone(node, opts) {
   }
 
   if (items.length) {
-    const listMode = modeOf(node) === MODE_LIST;
-    if (listMode) {
+    if (modeOf(node) === MODE_LIST) {
       const grid = document.createElement('div');
       grid.className = 'zone-grid';
       items.forEach((it) => grid.appendChild(buildItem(it)));
@@ -1462,42 +1480,50 @@ function buildZone(node, opts) {
   return zone;
 }
 
-/* ---------- 铺满舞台 ---------- */
+/* ---------- 7.5 铺满舞台 ---------- */
 function draw() {
   const zones = $('zones');
   if (!zones) return;
   zones.innerHTML = '';
+  zones.classList.remove('searching');
 
   const here = current();
   const kids = childrenOf(here);
   const folders = kids.filter((c) => !c.url);
   const loose = kids.filter((c) => c.url);
 
-  // 每个文件夹一张卡（能打开）
   folders.forEach((f) => zones.appendChild(buildZone(f, { openable: true })));
 
   // 散落书签：顶层的收成一张「未分组」卡；文件夹里的直接铺在当层
   if (loose.length) {
-    if (state.path.length) {
-      zones.appendChild(buildZone({ id: `__loose__:${here.id}`, title: here.title || '书签', children: loose }, { openable: false }));
-    } else {
-      zones.appendChild(buildZone({ id: '__loose__', title: '未分组', children: loose }, { openable: false }));
-    }
+    const title = state.path.length ? (here.title || '书签') : '未分组';
+    zones.appendChild(buildZone({ id: `__loose__:${here.id}`, title, children: loose }, { openable: false }));
   }
 
   const emptyBox = $('empty');
   if (emptyBox) emptyBox.hidden = !!(folders.length || loose.length);
 
-  paintCrumb();
   paintTray();
 }
 
-function current() {
-  return state.path.length ? state.path[state.path.length - 1] : state.bar;
+/* 搜索中：整页换成一张扁平结果列表 */
+function drawSearch() {
+  const zones = $('zones');
+  if (!zones) return;
+  zones.innerHTML = '';
+  zones.classList.add('searching');
+
+  const hits = searchHits(state.query);
+  const emptyBox = $('empty');
+  if (emptyBox) emptyBox.hidden = hits.length > 0;
+
+  const grid = document.createElement('div');
+  grid.className = 'zone-grid';
+  hits.forEach((h) => grid.appendChild(buildItem(h.node)));
+  zones.appendChild(grid);
 }
 
-/* ---------- 面包屑 ----------
-   CSS: .crumb 直接放 button，当前位置加 .cur */
+/* ---------- 7.6 面包屑 ---------- */
 function paintCrumb() {
   const crumb = $('crumb');
   if (!crumb) return;
@@ -1508,26 +1534,40 @@ function paintCrumb() {
   const home = document.createElement('button');
   home.type = 'button';
   home.textContent = '书签栏';
-  home.addEventListener('click', () => { state.path = []; draw(); });
+  home.addEventListener('click', () => { state.path = []; state.zoom = null; closeZoom(); draw(); });
   crumb.appendChild(home);
 
   state.path.forEach((node, i) => {
     const sep = document.createElement('span');
+    sep.className = 'crumb-sep';
     sep.textContent = '/';
-    sep.style.opacity = '0.4';
     crumb.appendChild(sep);
 
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = node.title || '未命名';
     if (i === state.path.length - 1) b.classList.add('cur');
-    b.addEventListener('click', () => { state.path = state.path.slice(0, i + 1); draw(); });
+    b.addEventListener('click', () => {
+      state.path = state.path.slice(0, i + 1);
+      openZoom(node);
+    });
     crumb.appendChild(b);
   });
 }
 
-/* ---------- 放大层 ---------- */
+/* ---------- 7.7 放大层 ----------
+   固定尺寸：约 920×600，屏幕小就按可用区域缩。翻文件夹时卡片不动，
+   只有里面的内容在换，所以不会跟着「跳」 */
+function zoomSize() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const w = Math.max(320, Math.min(920, vw - 96));
+  const h = Math.max(240, Math.min(600, vh - 112));
+  return { w, h, vw, vh };
+}
+
 function openZoom(node) {
+  if (!node) return;
   const box = $('folderZoom');
   const card = $('folderZoomCard');
   if (!box || !card) return;
@@ -1560,9 +1600,26 @@ function openZoom(node) {
 
   head.append(identity, meta);
 
-  /* CSS 里 `.zoom-head:hover .zone-view` 规定了放大层头部也有显示方式开关，
-     所以这里也放一个 —— 在放大层里就能直接切图标/列表 */
   if (linksOf(node).length) head.appendChild(buildViewToggle(node));
+
+  // 常驻出口（v1.18.0）：有上一层就给「上一组」，永远给 ×
+  if (node.parentId && state.byId.has(node.parentId) && state.byId.get(node.parentId) !== state.bar) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'zoom-back';
+    back.title = '上一组（Esc / Backspace）';
+    back.innerHTML = SVG_BACK;
+    back.addEventListener('click', (e) => { e.stopPropagation(); goBack(); });
+    head.appendChild(back);
+  }
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'zoom-close';
+  close.title = '关闭（Esc）';
+  close.innerHTML = SVG_CLOSE;
+  close.addEventListener('click', (e) => { e.stopPropagation(); closeZoom(); });
+  head.appendChild(close);
 
   /* 内容 */
   const content = document.createElement('div');
@@ -1572,13 +1629,19 @@ function openZoom(node) {
   const items = linksOf(node);
 
   if (subs.length) {
+    const label = document.createElement('div');
+    label.className = 'zoom-section-label';
+    label.textContent = '文件夹';
+    content.appendChild(label);
+
     const list = document.createElement('div');
     list.className = 'zoom-folders';
     subs.forEach((s) => {
       const b = document.createElement('div');
       b.className = 'zoom-folder';
-      b.dataset.id = s.id;
+      b.dataset.fid = hexId(s.id);
       b.tabIndex = 0;
+      b.draggable = true;
 
       const fi = document.createElement('span');
       fi.className = 'zoom-folder-icon';
@@ -1601,12 +1664,27 @@ function openZoom(node) {
 
       b.append(fi, copy, ar);
       b.addEventListener('click', (e) => { e.stopPropagation(); openZoom(s); });
+      b.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          openZoom(s);
+        }
+      });
+      bindSubDrag(b, s);
+      bindZoomFolderDrop(b, s);
       list.appendChild(b);
     });
     content.appendChild(list);
   }
 
   if (items.length) {
+    if (subs.length) {
+      const label = document.createElement('div');
+      label.className = 'zoom-section-label';
+      label.textContent = '书签';
+      content.appendChild(label);
+    }
     if (modeOf(node) === MODE_LIST) {
       const list = document.createElement('div');
       list.className = 'zoom-list';
@@ -1629,12 +1707,7 @@ function openZoom(node) {
 
   card.append(head, content);
 
-  /* 尺寸与位置：CSS 里 .folder-zoom-card 是 position:fixed + flex column，
-     宽高由 JS 给，这里按可视区算一个合适的大小 */
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const w = Math.max(320, Math.min(760, vw - 96));
-  const h = Math.max(240, Math.min(640, vh - 112));
+  const { w, h, vw, vh } = zoomSize();
   card.style.width = `${w}px`;
   card.style.height = `${h}px`;
   card.style.left = `${Math.round((vw - w) / 2)}px`;
@@ -1652,28 +1725,36 @@ function closeZoom() {
   state.zoom = null;
 }
 
-/* 点文件夹 = 开这张卡片的放大层；再点进子文件夹就换一张 */
+/* 点文件夹 = 打开放大层（桌面上双击才进去，单点不打扰） */
 function enter(node) {
   openZoom(node);
 }
 
 function goBack() {
-  if (state.zoom && state.zoom.parentId && state.byId.has(state.zoom.parentId)) {
-    openZoom(state.byId.get(state.zoom.parentId));
+  const node = state.zoom;
+  if (!node) return;
+  const parent = node.parentId ? state.byId.get(node.parentId) : null;
+  if (parent && parent !== state.bar) {
+    openZoom(parent);
   } else {
     closeZoom();
   }
 }
 
-/* ---------- 置顶栏 ---------- */
+/* ---------- 7.8 置顶栏 ---------- */
+function resolveIconEntry(entry) {
+  if (!entry) return null;
+  if (entry.url) return entry;
+  const id = typeof entry === 'string' ? entry : entry.id;
+  return state.byId.get(id) || null;
+}
+
 function paintTray() {
   const tray = $('tray');
   const box = $('trayApps');
   if (!tray || !box) return;
 
-  const list = (state.icons || [])
-    .map((ic) => (ic && ic.url ? ic : state.byId.get(typeof ic === 'string' ? ic : ic && ic.id)))
-    .filter(Boolean);
+  const list = (state.icons || []).map(resolveIconEntry).filter(Boolean);
 
   box.innerHTML = '';
   if (!list.length) { tray.hidden = true; return; }
@@ -1682,7 +1763,7 @@ function paintTray() {
   list.forEach((node) => {
     const el = document.createElement('div');
     el.className = 'tray-app';
-    el.dataset.id = node.id;
+    el.dataset.fid = hexId(node.id);
     el.tabIndex = 0;
     el.draggable = true;
 
@@ -1697,6 +1778,12 @@ function paintTray() {
     el.append(ico, name);
 
     el.addEventListener('click', (e) => openUrl(node.url, e.ctrlKey || e.metaKey));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openUrl(node.url, e.ctrlKey || e.metaKey);
+      }
+    });
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1707,93 +1794,488 @@ function paintTray() {
   });
 }
 
-/* ============================================================================
-   拖拽 / 右键 / 刷新 / 启动
+/* ---------------- 8. 交互 ---------------- */
 
-   拖拽铁律：内部拖拽只用自定义 MIME，绝不用 text/plain、text/uri-list。
-   旧版本正是因为用了 text/plain，浏览器把内部拖动当成「从外面拖进来一个链接」，
-   结果触发导入布局的误判 —— 拖图标变成导布局，就是那个 bug。
-   ============================================================================ */
+/* ---------- 8.1 搜索引擎 / 时钟 / 跳转 ---------- */
+function paintEngine() {
+  const e = ENGINES.find((x) => x.id === state.engine) || ENGINES[0];
+  const logo = $('engineLogo');
+  const name = $('engineName');
+  const input = $('searchInput');
+  if (logo) logo.textContent = e.logo;
+  if (name) name.textContent = e.name;
+  if (input) paintPlaceholder();
+  const menu = $('engineMenu');
+  if (menu) {
+    menu.innerHTML = '';
+    ENGINES.forEach((x) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      if (x.id === state.engine) b.classList.add('on');
+      b.textContent = x.name;
+      b.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        state.engine = x.id;
+        paintEngine();
+        await storeSet('engine', x.id);
+        menu.hidden = true;
+      });
+      menu.appendChild(b);
+    });
+  }
+}
 
+function engineNow() {
+  return ENGINES.find((x) => x.id === state.engine) || ENGINES[0];
+}
+
+/* 占位文字跟着结果走（v1.18.0）：有命中就写「回车打开「XXX」· 其余 N 个」，
+   没有命中才写「没有匹配，回车用必应搜索」 */
+function paintPlaceholder() {
+  const input = $('searchInput');
+  if (!input) return;
+  const e = engineNow();
+  const q = String(input.value || '').trim();
+  if (!q) {
+    input.placeholder = `搜索书签，回车用${e.name}搜索`;
+    return;
+  }
+  const hits = searchHits(q);
+  if (!hits.length) {
+    input.placeholder = `没有匹配，回车用${e.name}搜索`;
+    return;
+  }
+  const first = hits[0].node.title || hits[0].node.url;
+  input.placeholder = hits.length > 1
+    ? `回车打开「${first}」 · 其余 ${hits.length - 1} 个`
+    : `回车打开「${first}」`;
+}
+
+/* 输入本身就是网址时，回车直接打开 */
+const URL_LIKE = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?([/?#].*)?$/i;
+
+function looksLikeUrl(s) {
+  const raw = String(s || '').trim();
+  if (!raw || /\s/.test(raw)) return false;
+  return URL_LIKE.test(raw) || /^https?:\/\//i.test(raw);
+}
+
+function withScheme(s) {
+  const raw = String(s).trim();
+  return /^[a-z]+:\/\//i.test(raw) ? raw : `https://${raw}`;
+}
+
+function runSearch() {
+  const input = $('searchInput');
+  const q = (input && input.value || '').trim();
+  if (!q) return;
+  // 唯一例外：输入本身就是网址，直接打开
+  if (looksLikeUrl(q)) { openUrl(withScheme(q), false); return; }
+  const e = engineNow();
+  openUrl(e.url(q), false);
+}
+
+function openUrl(url, newTab) {
+  if (!url) return;
+  if (newTab) {
+    if (HAS_CHROME && chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url });
+    else window.open(url, '_blank');
+    return;
+  }
+  if (HAS_CHROME && chrome.tabs && chrome.tabs.update) {
+    chrome.tabs.update({ url });
+  } else {
+    window.location.href = url;
+  }
+}
+
+function tickClock() {
+  const t = $('clockTime');
+  const d = $('clockDate');
+  if (!t || !d) return;
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  t.textContent = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const wd = '日一二三四五六'[now.getDay()];
+  d.textContent = `${now.getMonth() + 1} 月 ${now.getDate()} 日 周${wd}`;
+}
+
+/* ---------- 8.2 搜索 ----------
+   排序：标题开头命中 > 标题包含 > 只有网址命中。
+   搜 github 时不会被一个域名里带 github 的镜像站抢到第一条 */
+function searchHits(q) {
+  const query = String(q || '').trim().toLowerCase();
+  if (!query) return [];
+  const out = [];
+  state.byId.forEach((node) => {
+    if (!node.url) return;
+    const title = String(node.title || '').toLowerCase();
+    const url = String(node.url || '').toLowerCase();
+    let score = 0;
+    if (title.startsWith(query)) score = 3;
+    else if (title.includes(query)) score = 2;
+    else if (url.includes(query)) score = 1;
+    if (!score) return;
+    out.push({ node, score, crumb: crumbOf(node) });
+  });
+  out.sort((a, b) => (b.score - a.score) || a.node.title.localeCompare(b.node.title, 'zh'));
+  return out;
+}
+
+/* 这条书签在哪：书签栏/工具 */
+function crumbOf(node) {
+  const parts = [];
+  let p = node && node.parentId ? state.byId.get(node.parentId) : null;
+  while (p && p !== state.bar) {
+    parts.unshift(p.title || '未命名');
+    p = p.parentId ? state.byId.get(p.parentId) : null;
+  }
+  return ['书签栏', ...parts].join(' / ');
+}
+
+async function onSearchInput() {
+  const input = $('searchInput');
+  if (!input) return;
+  const q = String(input.value || '').trim();
+  const box = input.closest('.search');
+  const clear = $('searchClear');
+  if (box) box.classList.toggle('has-value', !!input.value);
+  if (clear) clear.hidden = !input.value;
+  paintPlaceholder();
+  if (q === state.query) return;
+  state.query = q;
+  if (!q) { draw(); paintCrumb(); return; }
+  drawSearch();
+}
+
+function clearSearch() {
+  const input = $('searchInput');
+  if (!input) return;
+  input.value = '';
+  state.query = '';
+  onSearchInput();
+  paintCrumb();
+  input.focus();
+}
+
+/* ---------- 8.3 拖拽 ----------
+   铁律：内部拖拽只用私有 MIME，绝不用 text/plain / text/uri-list。
+   旧版本正是因为用了 text/plain，浏览器把内部拖动当成「从外面拖进来
+   一个链接」，结果拖图标变成导布局 —— 那个 bug 就是这么来的。 */
 const BD_DRAG = 'application/x-bd-node';
-let dragNode = null;
+const DRAG_CLASSES = ['dragging', 'drop-active', 'insert-before', 'insert-after', 'drop-target'];
 
 function beginDrag(e, node) {
-  dragNode = node;
+  state.dragNode = node;
   try {
-    e.dataTransfer.setData(BD_DRAG, String(node.id || ''));
+    e.dataTransfer.setData(BD_DRAG, String((node && node.id) || ''));
     e.dataTransfer.effectAllowed = 'move';
   } catch { /* 少数环境不给 setData */ }
   document.body.classList.add('is-dragging');
 }
 
 function endDrag() {
-  dragNode = null;
+  state.dragNode = null;
   document.body.classList.remove('is-dragging');
-  document.querySelectorAll('.dragging, .drop-active, .insert-before, .insert-after, .drop-target')
-    .forEach((el) => el.classList.remove('dragging', 'drop-active', 'insert-before', 'insert-after', 'drop-target'));
+  setDropHint(false);
+  clearDragMarks();
+}
+
+function clearDragMarks(root) {
+  const scope = root || document;
+  DRAG_CLASSES.slice(1).forEach((cls) => {
+    scope.querySelectorAll(`.${cls}`).forEach((el) => el.classList.remove(cls));
+  });
+  scope.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
 }
 
 function bindItemDrag(el, node) {
-  el.addEventListener('dragstart', (e) => { beginDrag(e, node); e.stopPropagation(); });
+  el.addEventListener('dragstart', (e) => {
+    el.classList.add('dragging');
+    beginDrag(e, node);
+    e.stopPropagation();
+  });
   el.addEventListener('dragend', endDrag);
 }
 
 function bindSubDrag(el, node) {
-  el.addEventListener('dragstart', (e) => { beginDrag(e, node); e.stopPropagation(); });
+  el.addEventListener('dragstart', (e) => {
+    el.classList.add('dragging');
+    beginDrag(e, node);
+    e.stopPropagation();
+  });
   el.addEventListener('dragend', endDrag);
 }
 
-/* 卡片：标题栏是把手（CSS 里 .zone-head[draggable="true"] 就是 grab 手型），
-   整张卡是落点 —— 拖进来的书签会进入这个文件夹 */
+function bindTrayDrag(el, node) {
+  el.addEventListener('dragstart', (e) => {
+    el.classList.add('dragging');
+    beginDrag(e, node);
+    e.stopPropagation();
+  });
+  el.addEventListener('dragend', endDrag);
+}
+
+/* 卡片标题栏是把手：落到别的卡片左/右窄边 = 换位置，落到中间 = 挪进去 */
+const ZONE_EDGE = 0.28;
+const ZONE_EDGE_MAX = 130;
+
+function zoneEdgeOf(zone, x) {
+  const r = zone.getBoundingClientRect();
+  const edge = Math.min(r.width * ZONE_EDGE, ZONE_EDGE_MAX);
+  if (x - r.left <= edge) return 'before';
+  if (r.right - x <= edge) return 'after';
+  return '';
+}
+
 function bindZoneDrag(head, zone, node) {
-  head.addEventListener('dragstart', (e) => { beginDrag(e, node); });
+  head.addEventListener('dragstart', (e) => {
+    zone.classList.add('dragging');
+    beginDrag(e, node);
+    e.stopPropagation();
+  });
   head.addEventListener('dragend', endDrag);
   head.addEventListener('dragenter', (e) => {
-    if (!dragNode) return;
+    if (!state.dragNode) return;
     e.preventDefault();
-    zone.classList.add('drop-active');
   });
 }
 
 function bindZoneDrop(zone, node) {
   zone.addEventListener('dragover', (e) => {
-    if (!dragNode) return;
+    const src = state.dragNode;
+    if (!src) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    zone.classList.add('drop-active');
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+
+    const srcIsFolder = !src.url;
+    const edge = srcIsFolder && !zone.classList.contains('dragging') ? zoneEdgeOf(zone, e.clientX) : '';
+    zone.classList.toggle('insert-before', edge === 'before');
+    zone.classList.toggle('insert-after', edge === 'after');
+    zone.classList.toggle('drop-active', !edge);
   });
   zone.addEventListener('dragleave', (e) => {
     if (zone.contains(e.relatedTarget)) return;
-    zone.classList.remove('drop-active');
+    zone.classList.remove('drop-active', 'insert-before', 'insert-after');
   });
   zone.addEventListener('drop', (e) => {
-    if (!dragNode) return;
+    const src = state.dragNode;
+    if (!src) return;
     e.preventDefault();
     e.stopPropagation();
 
-    const src = dragNode;
+    const edge = (!src.url && !zone.classList.contains('dragging')) ? zoneEdgeOf(zone, e.clientX) : '';
     endDrag();
+    if (src.id === node.id) return;
+    // 落点是「未分组」这种虚拟卡：目标是它所在的文件夹
+    const targetId = node.id && String(node.id).startsWith('__loose__') ? null : node.id;
 
-    if (String(src.id) === String(node.id)) return;
-    if (!HAS_CHROME || !chrome.bookmarks) { toast('预览模式不能拖动'); return; }
-    if (src.parentId === node.id) return;
-
-    const index = childrenOf(node).length;
-    try {
-      chrome.bookmarks.move(src.id, { parentId: node.id, index }, () => scheduleRefresh());
-    } catch {
-      toast('移动失败');
-    }
+    if (edge && targetId) { reorderZone(src, node, edge); return; }
+    moveInto(src, targetId);
   });
 }
 
-function bindTrayDrag(el, node) {
-  el.addEventListener('dragstart', (e) => { beginDrag(e, node); });
-  el.addEventListener('dragend', endDrag);
+/* 拖到子文件夹那一行：优先「移进那个子文件夹」，不会误判成换位置 */
+function bindZoomFolderDrop(el, node) {
+  el.addEventListener('dragover', (e) => {
+    if (!state.dragNode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.add('drop-active');
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (el.contains(e.relatedTarget)) return;
+    el.classList.remove('drop-active');
+  });
+  el.addEventListener('drop', (e) => {
+    if (!state.dragNode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const src = state.dragNode;
+    endDrag();
+    moveInto(src, node.id);
+  });
 }
 
-/* ---------- 右键菜单 ---------- */
+/* 桌面上的卡片：拖到卡片空白处 = 挪进这个文件夹 */
+function bindStageDrop() {
+  const stage = $('stage');
+  if (!stage) return;
+  stage.addEventListener('dragover', (e) => {
+    if (!state.dragNode) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    stage.classList.add('drop-active');
+  });
+  stage.addEventListener('dragleave', (e) => {
+    if (stage.contains(e.relatedTarget)) return;
+    stage.classList.remove('drop-active');
+  });
+  stage.addEventListener('drop', (e) => {
+    if (!state.dragNode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const src = state.dragNode;
+    endDrag();
+    const here = current();
+    moveInto(src, here && here.id);
+  });
+}
+
+/* 是不是「自己或自己的子孙」—— 拖进去会成环 */
+function isSelfOrDescendant(node, targetId) {
+  if (!node || !targetId) return false;
+  if (String(node.id) === String(targetId)) return true;
+  let p = state.byId.get(targetId);
+  while (p) {
+    if (String(p.id) === String(node.id)) return true;
+    p = p.parentId ? state.byId.get(p.parentId) : null;
+  }
+  return false;
+}
+
+/* 移动一条书签 / 一个文件夹到目标文件夹的末尾 */
+async function moveInto(src, targetId, opts) {
+  if (!src) return;
+  const node = src.url ? src : (state.byId.get(src.id) || src);
+  if (!targetId) return;
+  const target = state.byId.get(targetId);
+  if (!target) return;
+  if (isSelfOrDescendant(node, targetId)) { toast(node.url ? '已经在这里了' : '不能拖进自己里面'); return; }
+
+  if (!node.url && opts && opts.beforeSetup) return;
+
+  if (!HAS_BOOKMARKS) { toast('预览模式不能拖动'); return; }
+  try {
+    const index = (target.children || []).length;
+    await chrome.bookmarks.move(node.id, { parentId: targetId, index });
+    toast(`已移到「${target.title || '书签栏'}」`);
+    await refresh();
+  } catch {
+    toast('移动失败');
+  }
+}
+
+/* 拖卡片标题栏到另一张卡片左右两侧：交换先后 */
+async function reorderZone(src, target, edge) {
+  if (!src || src.url) return;
+  if (src.id === target.id) return;
+  if (!HAS_BOOKMARKS) { toast('预览模式不能拖动'); return; }
+  try {
+    const parent = state.byId.get(src.parentId);
+    const siblings = foldersOf(parent || state.bar).map((f) => f.id);
+    const from = siblings.indexOf(src.id);
+    const to = siblings.indexOf(target.id);
+    if (from < 0 || to < 0) return;
+    const list = siblings.slice();
+    list.splice(from, 1);
+    let at = list.indexOf(target.id);
+    if (at < 0) return;
+    if (edge === 'after') at += 1;
+    list.splice(at, 0, src.id);
+
+    // 一步步换到位：chrome.bookmarks 没有「批量重排」，只能按最终顺序逐个 move
+    for (let i = 0; i < list.length; i += 1) {
+      const id = list[i];
+      const node = state.byId.get(id);
+      if (node && childrenOf(parent).findIndex((c) => c.id === id) === i) continue;
+      await chrome.bookmarks.move(id, { parentId: parent.id, index: i });
+    }
+    const targetNode = state.byId.get(target.id);
+    toast(`已调到「${targetNode ? targetNode.title : ''}」${edge === 'before' ? '前面' : '后面'}`);
+    await refresh();
+  } catch {
+    toast('调整顺序失败');
+  }
+}
+
+/* 置顶图标拖到两个图标之间任意排序（不是两两互换） */
+function bindTrayDrop() {
+  const apps = $('trayApps');
+  if (!apps) return;
+  apps.addEventListener('dragover', (e) => {
+    if (!state.dragNode) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const target = e.target.closest ? e.target.closest('.tray-app') : null;
+    apps.querySelectorAll('.tray-app').forEach((el) => el.classList.remove('insert-before', 'insert-after'));
+    if (!target || target.classList.contains('dragging')) return;
+    const r = target.getBoundingClientRect();
+    const before = e.clientX < r.left + r.width / 2;
+    target.classList.toggle('insert-before', before);
+    target.classList.toggle('insert-after', !before);
+  });
+  apps.addEventListener('dragleave', (e) => {
+    if (apps.contains(e.relatedTarget)) return;
+    apps.querySelectorAll('.tray-app').forEach((el) => el.classList.remove('insert-before', 'insert-after'));
+  });
+  apps.addEventListener('drop', async (e) => {
+    if (!state.dragNode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const srcId = state.dragNode.id;
+    const target = e.target.closest ? e.target.closest('.tray-app') : null;
+    let at = null;
+    if (target) {
+      const before = target.classList.contains('insert-before');
+      at = trayIndexOf(target.dataset.fid, before ? 0 : 1);
+    }
+    endDrag();
+    if (!isPinned(srcId)) return;
+    await moveIcon(srcId, at);
+  });
+}
+
+function trayIndexOf(fid, offset) {
+  const list = state.icons || [];
+  for (let i = 0; i < list.length; i += 1) {
+    const n = resolveIconEntry(list[i]);
+    if (n && hexId(n.id) === fid) return i + offset;
+  }
+  return null;
+}
+
+function isPinned(id) {
+  return (state.icons || []).some((entry) => {
+    const n = resolveIconEntry(entry);
+    return n && String(n.id) === String(id);
+  });
+}
+
+/* 把置顶图标挪到第 at 位；at=null 表示挪到最末 */
+async function moveIcon(id, at) {
+  const list = (state.icons || []).slice();
+  const from = list.findIndex((entry) => {
+    const n = resolveIconEntry(entry);
+    return n && String(n.id) === String(id);
+  });
+  if (from < 0) return;
+  const [item] = list.splice(from, 1);
+  let pos = at == null ? list.length : at;
+  if (from < pos) pos -= 1;
+  pos = Math.max(0, Math.min(list.length, pos));
+  list.splice(pos, 0, item);
+  state.icons = list;
+  await storeSet('icons', state.icons);
+  paintTray();
+}
+
+/* 从网页里拖链接进来：落在哪张卡片 / 哪个子文件夹，就在那里新建书签 */
+function bindExternalLinkDrop() {
+  document.addEventListener('dragover', (e) => {
+    if (state.dragNode) return;
+    const types = (e.dataTransfer && e.dataTransfer.types) || [];
+    const hasFile = Array.prototype.indexOf.call(types, 'Files') >= 0;
+    const hasLink = Array.prototype.indexOf.call(types, 'text/uri-list') >= 0
+      || Array.prototype.indexOf.call(types, 'text/plain') >= 0;
+    if (!hasFile && !hasLink) return;
+    e.preventDefault();
+    setDropHint(true);
+  });
+}
+
+/* ---------- 8.4 右键菜单 ---------- */
 function showMenu(x, y, items) {
   const ctx = $('ctx');
   if (!ctx) return;
@@ -1803,78 +2285,274 @@ function showMenu(x, y, items) {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = it.label;
+    if (it.on) b.classList.add('on');
     if (it.danger) b.classList.add('danger');
-    b.addEventListener('click', (e) => { e.stopPropagation(); hideCtx(); it.run(); });
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideCtx();
+      Promise.resolve().then(() => it.run()).catch(() => {});
+    });
     ctx.appendChild(b);
   });
   ctx.hidden = false;
-  const w = ctx.offsetWidth || 170;
-  const h = ctx.offsetHeight || 120;
+  const w = ctx.offsetWidth || 180;
+  const h = ctx.offsetHeight || 150;
   ctx.style.left = `${Math.max(6, Math.min(x, window.innerWidth - w - 10))}px`;
   ctx.style.top = `${Math.max(6, Math.min(y, window.innerHeight - h - 10))}px`;
+  ctx.dataset.open = '1';
 }
 
 function hideCtx() {
   const ctx = $('ctx');
-  if (ctx) ctx.hidden = true;
+  if (ctx) { ctx.hidden = true; ctx.dataset.open = ''; }
 }
 
-/* 置顶图标的右键：取消置顶 */
+/* 置顶图标的右键 */
 function showTrayMenu(node, x, y) {
   showMenu(x, y, [
     { label: '打开', run: () => openUrl(node.url, false) },
     { label: '在新标签页打开', run: () => openUrl(node.url, true) },
     '-',
-    {
-      label: '取消置顶',
-      run: () => {
-        state.icons = (state.icons || []).filter((ic) => {
-          const id = ic && typeof ic === 'object' ? ic.id : ic;
-          return String(id) !== String(node.id);
-        });
-        storeSet('icons', state.icons);
-        paintTray();
-        toast('已取消置顶');
-      },
-    },
+    { label: '取消置顶', run: () => unpinIcon(node) },
   ]);
 }
 
-/* 书签的右键：常规操作 */
+/* 书签的右键：显示方式 / 置顶 / 复制 / 编辑删除 */
 function showItemMenu(node, x, y) {
+  const mode = modeOf(node);
+  const explicit = isMode(state.views.items[node.id]);
   showMenu(x, y, [
     { label: '打开', run: () => openUrl(node.url, false) },
     { label: '在新标签页打开', run: () => openUrl(node.url, true) },
     '-',
-    { label: '复制地址', run: () => copyText(node.url).then(() => toast('地址已复制')).catch(() => toast('复制失败')) },
-    { label: '置顶到桌面', run: () => pinIcon(node) },
+    { label: '以图标显示', on: mode === MODE_ICON, run: () => setItemMode(node, MODE_ICON) },
+    { label: '以列表显示', on: mode === MODE_LIST, run: () => setItemMode(node, MODE_LIST) },
+    ...(explicit ? [{ label: '恢复自动显示', run: () => resetItemMode(node) }] : []),
+    '-',
+    { label: isPinned(node.id) ? '已在桌面上' : '置顶到桌面图标', run: () => pinIcon(node) },
+    { label: '复制地址', run: async () => { const ok = await copyText(node.url); toast(ok ? '地址已复制' : '复制失败'); } },
+    '-',
+    { label: '重命名', run: () => renameNode(node) },
+    { label: '删除', danger: true, run: () => removeNode(node) },
   ]);
 }
 
-function pinIcon(node) {
-  const list = state.icons || [];
-  if (list.some((ic) => String(ic && ic.id) === String(node.id))) { toast('已经在桌面上了'); return; }
-  state.icons = list.concat([{ id: node.id, url: node.url, title: node.title, iconUrl: node.iconUrl }]);
-  storeSet('icons', state.icons);
+/* 文件夹的右键 */
+function showFolderMenu(node, x, y) {
+  const mode = modeOf(node);
+  const isReal = state.byId.has(node.id);
+  const items = [
+    { label: '打开', run: () => enter(node) },
+  ];
+  if (isReal) {
+    items.push(
+      '-',
+      { label: '新建书签', run: () => createBookmark(node) },
+      { label: '新建子文件夹', run: () => createFolder(node) },
+      '-',
+      { label: '图标显示', on: mode === MODE_ICON, run: () => setFolderModeThen(node, MODE_ICON) },
+      { label: '列表显示', on: mode === MODE_LIST, run: () => setFolderModeThen(node, MODE_LIST) },
+      { label: '按名称排序', run: () => sortFolder(node) },
+      '-',
+      { label: '重命名', run: () => renameNode(node) },
+      { label: '删除', danger: true, run: () => removeNode(node) },
+    );
+  }
+  showMenu(x, y, items);
+}
+
+async function setFolderModeThen(node, mode) {
+  await setFolderMode(node, mode);
+  render();
+}
+
+async function setItemMode(node, mode) {
+  state.views.items[node.id] = mode;
+  await storeSet('views', state.views);
+  render();
+}
+
+async function resetItemMode(node) {
+  delete state.views.items[node.id];
+  await storeSet('views', state.views);
+  render();
+}
+
+async function pinIcon(node) {
+  if (isPinned(node.id)) { toast('已经在桌面上了'); return; }
+  state.icons = (state.icons || []).concat([{
+    id: node.id, url: node.url, title: node.title, iconUrl: node.iconUrl || '',
+  }]);
+  await storeSet('icons', state.icons);
   paintTray();
   toast('已置顶');
 }
 
-/* ---------- 刷新 ---------- */
+async function unpinIcon(node) {
+  const before = (state.icons || []).length;
+  state.icons = (state.icons || []).filter((entry) => {
+    if (!entry) return false;
+    if (entry.url) return String(entry.url) !== String(node.url);
+    return String(entry.id) !== String(node.id);
+  });
+  if (state.icons.length === before) return;
+  await storeSet('icons', state.icons);
+  paintTray();
+  toast('已取消置顶');
+}
+
+/* ---------- 8.5 书签的增删改 ---------- */
+function promptText(title, value) {
+  return new Promise((resolve) => {
+    const box = $('modal');
+    const titleEl = $('modalTitle');
+    const body = $('modalBody');
+    const ok = $('modalOk');
+    const cancel = $('modalCancel');
+    if (!box || !body || !ok || !cancel) { resolve(window.prompt(title, value || '') || null); return; }
+
+    if (titleEl) titleEl.textContent = title;
+    body.innerHTML = '';
+    const input = document.createElement('input');
+    input.className = 'modal-input';
+    input.type = 'text';
+    input.value = value || '';
+    input.spellcheck = false;
+    body.appendChild(input);
+    box.hidden = false;
+    input.focus();
+    input.select();
+
+    const done = (v) => {
+      box.hidden = true;
+      ok.removeEventListener('click', onOk);
+      cancel.removeEventListener('click', onCancel);
+      input.removeEventListener('keydown', onKey);
+      resolve(v);
+    };
+    const onOk = () => done(input.value.trim());
+    const onCancel = () => done(null);
+    const onKey = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); onOk(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCancel(); }
+    };
+    ok.addEventListener('click', onOk);
+    cancel.addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKey);
+  });
+}
+
+async function createFolder(parent) {
+  if (!HAS_BOOKMARKS) { toast('预览模式不能新建'); return; }
+  const name = await promptText('新文件夹的名字', '');
+  if (!name) return;
+  try {
+    await chrome.bookmarks.create({ parentId: parent.id, title: name });
+    await refresh();
+    toast(`已新建「${name}」`);
+  } catch {
+    toast('新建失败');
+  }
+}
+
+async function createBookmark(parent) {
+  if (!HAS_BOOKMARKS) { toast('预览模式不能新建'); return; }
+  const title = await promptText('书签名字', '');
+  if (title == null) return;
+  const url = await promptText('书签地址', 'https://');
+  if (!url) return;
+  try {
+    await chrome.bookmarks.create({ parentId: parent.id, title: title || url, url: withScheme(url) });
+    await refresh();
+    toast('已新建书签');
+  } catch {
+    toast('新建失败，地址是不是写错了');
+  }
+}
+
+async function renameNode(node) {
+  if (!HAS_BOOKMARKS) { toast('预览模式不能改名'); return; }
+  const name = await promptText('改成什么名字', node.title || '');
+  if (name == null) return;
+  try {
+    await chrome.bookmarks.update(node.id, { title: name });
+    await refresh();
+  } catch {
+    toast('改名失败');
+  }
+}
+
+async function removeNode(node) {
+  if (!HAS_BOOKMARKS) { toast('预览模式不能删除'); return; }
+  const what = node.url ? '书签' : '文件夹（连同里面的东西）';
+  if (!window.confirm(`删除这个${what}？删了就找不回来了。`)) return;
+  try {
+    await chrome.bookmarks.removeTree(node.id);
+    await refresh();
+    toast('已删除');
+  } catch {
+    toast('删除失败');
+  }
+}
+
+async function sortFolder(node) {
+  if (!HAS_BOOKMARKS) { toast('预览模式不能排序'); return; }
+  try {
+    const kids = (await chrome.bookmarks.getChildren(node.id)) || [];
+    const sorted = kids.slice().sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'zh'));
+    for (let i = 0; i < sorted.length; i += 1) {
+      await chrome.bookmarks.move(sorted[i].id, { parentId: node.id, index: i });
+    }
+    await refresh();
+    toast('已按名称排序');
+  } catch {
+    toast('排序失败');
+  }
+}
+
+/* ---------- 8.6 渲染与刷新 ---------- */
+/* 记下焦点再画，画完还回去 —— 否则每次书签变化都会把键盘的人踢回页首 */
+function focusToken() {
+  const a = document.activeElement;
+  if (!a || a === document.body) return '';
+  if (a.closest) {
+    const host = a.closest('[data-fid]');
+    if (host) return host.dataset.fid;
+  }
+  return a.id ? `#${a.id}` : '';
+}
+
+function restoreFocus(token) {
+  if (!token) return;
+  if (token[0] === '#') {
+    const el = $(token.slice(1));
+    if (el) el.focus();
+    return;
+  }
+  const el = document.querySelector(`[data-fid="${token}"]`);
+  if (el && el.focus) el.focus();
+}
+
+function render() {
+  const token = focusToken();
+  if (state.query) drawSearch(); else draw();
+  paintCrumb();
+  paintTray();
+  if (token) restoreFocus(token);
+  if (state.zoom && state.byId.has(state.zoom.id)) openZoom(state.byId.get(state.zoom.id));
+}
+
 /* 书签被外部改动（增删改、拖动）时重读整棵树 */
 async function refresh() {
-  const keepZoomId = state.zoom && state.zoom.id;
+  state.lastFocus = focusToken();
   await loadTree();
-
   state.path = state.path.map((n) => state.byId.get(n.id)).filter(Boolean);
-
-  if (keepZoomId && state.byId.has(keepZoomId)) {
-    openZoom(state.byId.get(keepZoomId));
-  } else if (state.zoom) {
-    closeZoom();
+  if (state.zoom) {
+    state.zoom = state.byId.get(state.zoom.id) || null;
+    if (!state.zoom) closeZoom();
   }
-
-  draw();
+  render();
+  if (state.lastFocus) restoreFocus(state.lastFocus);
 }
 
 let refreshTick = 0;
@@ -1883,26 +2561,134 @@ function scheduleRefresh() {
   refreshTick = setTimeout(() => { refresh().catch(() => {}); }, 120);
 }
 
-/* ---------- 启动 ---------- */
-async function init() {
-  tickClock();
-  setInterval(tickClock, 10000);
+/* ---------- 8.7 快捷键卡 ---------- */
+function toggleKeyHint(force) {
+  const card = $('helpCard');
+  if (!card) return;
+  card.hidden = force == null ? !card.hidden : !force;
+}
 
+/* ---------- 8.8 键盘导航 ----------
+   方向键按几何位置找最近的一个，不按 DOM 顺序瞎走 */
+function kbTargets() {
+  const scope = $('folderZoom') && !$('folderZoom').hidden
+    ? $('folderZoomCard')
+    : $('zones');
+  if (!scope) return [];
+  return [...scope.querySelectorAll('.item, .subfolder, .zoom-folder, .tray-app, .zone-head.openable')]
+    .filter((el) => el.offsetParent !== null || el.getClientRects().length);
+}
+
+function moveFocus(dir) {
+  const list = kbTargets();
+  if (!list.length) return;
+  const active = document.activeElement;
+  const cur = list.indexOf(active);
+  if (cur < 0) { list[0].focus(); return; }
+  const r = active.getBoundingClientRect();
+  const ax = r.left + r.width / 2;
+  const ay = r.top + r.height / 2;
+  let best = -1;
+  let bestScore = Infinity;
+  list.forEach((el, i) => {
+    if (i === cur) return;
+    const b = el.getBoundingClientRect();
+    const bx = b.left + b.width / 2;
+    const by = b.top + b.height / 2;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const ok = dir === 'left' ? dx < -4 : dir === 'right' ? dx > 4 : dir === 'up' ? dy < -4 : dy > 4;
+    if (!ok) return;
+    const score = dir === 'left' || dir === 'right'
+      ? Math.abs(dx) + Math.abs(dy) * 3
+      : Math.abs(dy) + Math.abs(dx) * 3;
+    if (score < bestScore) { bestScore = score; best = i; }
+  });
+  if (best >= 0) list[best].focus();
+}
+
+/* 只有键盘操作才画焦点环，鼠标点完不闪 */
+function bindKeyboardFocusRing() {
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') document.body.classList.add('kb-mode');
+  }, true);
+  document.addEventListener('mousedown', () => document.body.classList.remove('kb-mode'), true);
+  document.addEventListener('focusin', (e) => {
+    const el = e.target;
+    if (!el || !el.classList) return;
+    const ring = document.body.classList.contains('kb-mode');
+    ['item', 'subfolder', 'zoom-folder', 'tray-app', 'zone-head'].forEach((cls) => {
+      document.querySelectorAll(`.${cls}.kb-focus`).forEach((n) => { if (n !== el) n.classList.remove('kb-focus'); });
+    });
+    if (ring && /item|subfolder|zoom-folder|tray-app|zone-head/.test(el.className)) el.classList.add('kb-focus');
+    else el.classList.remove('kb-focus');
+  });
+}
+
+/* 统一的「一层层退回去」：菜单 → 弹层 → 放大层 → 搜索 */
+function escLayer() {
+  const ctx = $('ctx');
+  if (ctx && !ctx.hidden) { hideCtx(); return true; }
+
+  const modal = $('modal');
+  if (modal && !modal.hidden) {
+    const cancel = $('modalCancel');
+    if (cancel) cancel.click();
+    return true;
+  }
+
+  const sync = $('syncPanel');
+  if (sync && !sync.hidden) { toggleSyncPanel(false); return true; }
+
+  const wp = $('wpPanel');
+  if (wp && !wp.hidden) { hideWallpaper(); return true; }
+
+  const help = $('helpCard');
+  if (help && !help.hidden) { toggleKeyHint(false); return true; }
+
+  const engineMenu = $('engineMenu');
+  if (engineMenu && !engineMenu.hidden) { engineMenu.hidden = true; return true; }
+
+  const zoom = $('folderZoom');
+  if (zoom && !zoom.hidden) {
+    const node = state.zoom;
+    const parent = node && node.parentId ? state.byId.get(node.parentId) : null;
+    if (parent && parent !== state.bar) openZoom(parent); else closeZoom();
+    return true;
+  }
+
+  const input = $('searchInput');
+  if (input && input.value) { clearSearch(); return true; }
+  return false;
+}
+
+/* ---------------- 9. 启动 ---------------- */
+
+async function init() {
+  const t = $('clockTime');
+  if (t) {
+    tickClock();
+    setInterval(tickClock, 10000);
+  }
+
+  // 偏好
   state.engine = await storeGet('engine', 'bing');
   state.wallBlur = await storeGet('wallBlur', 'mid');
-  state.icons = await storeGet('icons', []);
-  state.views = await storeGet('views', { v: 1, folders: {}, items: {} });
-  if (!state.views || !state.views.folders) state.views = { v: 1, folders: {}, items: {} };
+  const icons = await storeGet('icons', []);
+  state.icons = Array.isArray(icons) ? icons : [];
+  const views = await storeGet('views', null);
+  state.views = (views && views.folders && views.items) ? views : { v: 1, folders: {}, items: {} };
   if (!state.views.items) state.views.items = {};
-  state.bingDay = await storeGet('bingDay', 0);
+  if (!state.views.folders) state.views.folders = {};
+  state.bingDay = Number(await storeGet('bingDay', 0)) || 0;
 
   paintEngine();
   buildWallpaperPanel();
 
   await loadTree();
-  draw();
+  render();
 
-  // 壁纸：必应要先把今天那张找回来
+  // 壁纸：必应要先把选中的那张找回来
   const savedWall = await storeGet('wallpaper', 'aurora');
   if (savedWall === 'bing') {
     try {
@@ -1914,41 +2700,34 @@ async function init() {
       state.wallpaperBing = '';
     }
   }
-
   restorePaperTint(await storeGet('paperTint', null));
-  applyWallpaper(savedWall || 'aurora');
+  applyWallpaper(savedWall === 'bing' && !state.wallpaperBing ? 'aurora' : savedWall);
 
-  draw();
-  await bindUI();
+  bindUI();
 
-  if (HAS_CHROME && chrome.bookmarks) {
+  if (HAS_BOOKMARKS && chrome.bookmarks) {
     ['onCreated', 'onRemoved', 'onChanged', 'onMoved', 'onChildrenReordered'].forEach((ev) => {
       if (chrome.bookmarks[ev]) chrome.bookmarks[ev].addListener(() => scheduleRefresh());
     });
   }
+  if (HAS_CHROME && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener(() => {});
+  }
 }
 
-/* 事件都在这儿绑：函数全部定义完才绑，不会出现「还没定义就被调用」 */
-async function bindUI() {
-  const panel = $('wpPanel');
+function bindUI() {
+  // 壁纸面板
   const btnWallpaper = $('btnWallpaper');
-  if (btnWallpaper && panel) {
+  if (btnWallpaper) {
     btnWallpaper.addEventListener('click', (e) => {
       e.stopPropagation();
-      panel.hidden = !panel.hidden;
-      if (!panel.hidden) {
-        loadBingPanel();
-        clearInterval(state.bingTick);
-        state.bingTick = setInterval(() => { if (!panel.hidden) loadBingPanel(); }, BING_CACHE_MS);
-      } else {
-        clearInterval(state.bingTick);
-      }
+      toggleWallpaperPanel();
     });
   }
-
   const daily = $('wpBingDaily');
   if (daily) daily.addEventListener('click', (e) => { e.stopPropagation(); useTodayBing(); });
 
+  // 搜索引擎
   const engineBtn = $('engineBtn');
   const engineMenu = $('engineMenu');
   if (engineBtn && engineMenu) {
@@ -1958,58 +2737,111 @@ async function bindUI() {
     });
   }
 
+  // 搜索框
   const input = $('searchInput');
   const clear = $('searchClear');
   if (input) {
+    input.addEventListener('input', onSearchInput);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
-      if (e.key === 'Escape') { input.blur(); }
-    });
-    input.addEventListener('input', () => {
-      const box = input.closest('.search');
-      if (box) box.classList.toggle('has-value', !!input.value);
-      if (clear) clear.hidden = !input.value;
     });
   }
   if (clear) {
-    clear.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (!input) return;
-      input.value = '';
-      input.focus();
-      const box = input.closest('.search');
-      if (box) box.classList.remove('has-value');
-      clear.hidden = true;
-    });
+    clear.addEventListener('click', (e) => { e.stopPropagation(); clearSearch(); });
   }
 
+  // 帮助卡
   const helpBtn = $('btnHelp');
   if (helpBtn) helpBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleKeyHint(); });
   const helpClose = $('helpClose');
   if (helpClose) helpClose.addEventListener('click', () => toggleKeyHint(false));
 
-  const btnSync = $('btnSync');
-  if (btnSync) btnSync.addEventListener('click', (e) => { e.stopPropagation(); showSyncPanel(); });
-
+  // 新建分组
   const btnNewFolder = $('btnNewFolder');
   if (btnNewFolder) {
     btnNewFolder.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!HAS_CHROME || !chrome.bookmarks) { toast('预览模式不能新建'); return; }
-      const parent = state.path.length ? state.path[state.path.length - 1] : state.bar;
-      const title = window.prompt('新文件夹的名字');
-      if (!title || !title.trim()) return;
-      chrome.bookmarks.create({ parentId: parent.id, title: title.trim() }, () => scheduleRefresh());
+      const here = current();
+      await createFolder(here || state.bar);
+    });
+  }
+
+  // 布局同步面板
+  const btnSync = $('btnSync');
+  if (btnSync) btnSync.addEventListener('click', (e) => { e.stopPropagation(); toggleSyncPanel(); });
+  const syncClose = $('syncClose');
+  if (syncClose) syncClose.addEventListener('click', (e) => { e.stopPropagation(); toggleSyncPanel(false); });
+
+  const syncCopy = $('syncCopy');
+  if (syncCopy) {
+    syncCopy.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ok = await copyText(JSON.stringify(buildLayout(), null, 2));
+      toast(ok ? '布局 JSON 已复制' : '复制失败');
+    });
+  }
+  const syncDownload = $('syncDownload');
+  if (syncDownload) {
+    syncDownload.addEventListener('click', (e) => {
+      e.stopPropagation();
+      downloadLayout(buildLayout());
+      toast('已存成文件');
+    });
+  }
+  const syncShare = $('syncShare');
+  if (syncShare) {
+    syncShare.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        const text = await packLayout(buildLayout());
+        const ok = await copyText(text);
+        toast(ok ? `分享文本已复制（${text.length} 字）` : '复制失败');
+      } catch {
+        toast('生成分享文本失败');
+      }
+    });
+  }
+  const syncFile = $('syncFile');
+  const syncFileInput = $('syncFileInput');
+  if (syncFile && syncFileInput) {
+    syncFile.addEventListener('click', (e) => { e.stopPropagation(); syncFileInput.click(); });
+    syncFileInput.addEventListener('change', async () => {
+      const f = syncFileInput.files && syncFileInput.files[0];
+      syncFileInput.value = '';
+      if (f) await importLayoutFile(f);
+    });
+  }
+  const syncInput = $('syncInput');
+  const syncApply = $('syncApply');
+  if (syncApply && syncInput) {
+    syncApply.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const text = String(syncInput.value || '').trim();
+      if (!text) { toast('先粘一段布局进来'); return; }
+      await startPreview(text);
+    });
+  }
+  // 「确认覆盖」：预览出来之后再点一次才真的写
+  const preview = $('syncPreview');
+  if (preview) {
+    preview.addEventListener('click', async (e) => {
+      const btn = e.target.closest ? e.target.closest('.sync-apply-go') : null;
+      if (!btn || !pendingLayout) return;
+      const plan = pendingLayout;
+      pendingLayout = null;
+      await applyResolvedLayout(plan);
+      toggleSyncPanel(false);
     });
   }
 
   // 点空白：收起所有浮层
   document.addEventListener('mousedown', (e) => {
     const t = e.target;
-    if (!t.closest || !t.closest('.ctx')) hideCtx();
-    if (!t.closest || !t.closest('.wp-panel')) { if (!t.closest || !t.closest('#btnWallpaper')) hideWallpaper(); }
-    if (!t.closest || !t.closest('.help-card')) { if (!t.closest || !t.closest('#btnHelp')) toggleKeyHint(false); }
-    if (!t.closest || !t.closest('.search')) { if (engineMenu) engineMenu.hidden = true; }
+    const inside = (sel) => t && t.closest && t.closest(sel);
+    if (!inside('.ctx')) hideCtx();
+    if (!inside('.wp-panel') && !inside('#btnWallpaper')) hideWallpaper();
+    if (!inside('.help-card') && !inside('#btnHelp')) toggleKeyHint(false);
+    if (!inside('.search')) { const m = $('engineMenu'); if (m) m.hidden = true; }
   });
 
   // 键盘
@@ -2018,39 +2850,72 @@ async function bindUI() {
     const typing = /^(INPUT|TEXTAREA)$/.test(tag);
 
     if (e.key === 'Escape') {
-      if (hideCtxIfOpen()) return;
-      if (state.zoom) { closeZoom(); return; }
-      if (panel && !panel.hidden) { hideWallpaper(); return; }
-      toggleKeyHint(false);
+      if (escLayer()) { e.preventDefault(); }
       return;
     }
     if (typing) return;
 
-    if (e.key === '/') { e.preventDefault(); if (input) input.focus(); }
-    if (e.key === '?') { e.preventDefault(); toggleKeyHint(); }
-    if (e.key === 'Backspace' && state.path.length) { e.preventDefault(); goBack(); }
+    if (e.key === '/') { e.preventDefault(); if (input) input.focus(); return; }
+    if (e.key === '?' ) { e.preventDefault(); toggleKeyHint(); return; }
+    if (e.key === 'Backspace') {
+      if (state.zoom) { e.preventDefault(); goBack(); }
+      return;
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const dir = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[e.key];
+      e.preventDefault();
+      moveFocus(dir);
+      return;
+    }
+    if (e.key === 'F10' && e.shiftKey) {
+      const a = document.activeElement;
+      if (a && a.getBoundingClientRect) {
+        e.preventDefault();
+        const r = a.getBoundingClientRect();
+        a.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, clientX: r.left + 12, clientY: r.top + 12,
+        }));
+      }
+    }
   });
 
-  // 拖文件进来：只认 .json 布局
+  bindKeyboardFocusRing();
+  bindStageDrop();
+  bindTrayDrop();
+  bindExternalLinkDrop();
+
+  // 拖文件进来：只认 .json / .txt 布局
   document.addEventListener('dragover', (e) => {
     if (!isFilesDrag(e)) return;
     e.preventDefault();
-    dragHint(true);
+    setDropHint(true);
   });
   document.addEventListener('dragleave', (e) => {
     if (e.relatedTarget) return;
-    dragHint(false);
+    setDropHint(false);
   });
   document.addEventListener('drop', async (e) => {
-    if (dragNode) { endDrag(); return; }
-    if (!isFilesDrag(e)) return;
+    if (state.dragNode) { endDrag(); return; }
+    const types = (e.dataTransfer && e.dataTransfer.types) || [];
+    const hasFile = Array.prototype.indexOf.call(types, 'Files') >= 0;
+    if (hasFile) {
+      e.preventDefault();
+      setDropHint(false);
+      const file = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) await importLayoutFile(file);
+      return;
+    }
+    // 外部链接：落点所在的文件夹里新建一条书签
+    const link = e.dataTransfer && (e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain'));
+    if (!link) return;
     e.preventDefault();
-    dragHint(false);
-    const file = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (file) await importLayoutFile(file);
+    setDropHint(false);
+    await dropLink(link, e.target);
   });
 
   document.addEventListener('dragend', endDrag);
+  window.addEventListener('blur', endDrag);
+  window.addEventListener('resize', () => { if (state.zoom) openZoom(state.zoom); });
 
   // 放大层：点背景关（只绑一次）
   const backdrop = $('folderZoomBackdrop');
@@ -2058,27 +2923,55 @@ async function bindUI() {
     backdrop.dataset.bound = '1';
     backdrop.addEventListener('click', () => closeZoom());
   }
+
+  // 桌面空白双击 / 单机 Esc 缩回上一层
+  const stage = $('stage');
+  if (stage) {
+    stage.addEventListener('dblclick', (e) => {
+      if (e.target === stage || (e.target.classList && e.target.classList.contains('zones'))) {
+        state.path = [];
+        closeZoom();
+        draw();
+        paintCrumb();
+      }
+    });
+  }
 }
 
-function hideCtxIfOpen() {
-  const ctx = $('ctx');
-  if (ctx && !ctx.hidden) { hideCtx(); return true; }
-  return false;
+/* 从网页拖一条链接进来：落点在哪个子文件夹 / 卡片里，就放进哪个文件夹 */
+async function dropLink(link, targetEl) {
+  const url = String(link).split('\n')[0].trim();
+  if (!/^[a-z]+:\/\//i.test(url) && !looksLikeUrl(url)) { toast('这不是一个网址'); return; }
+  if (looksLikeLayout(url)) { await startPreview(url); return; }
+  if (!HAS_BOOKMARKS) { toast('预览模式不能新建'); return; }
+
+  let parentId = state.bar ? state.bar.id : null;
+  const host = targetEl && targetEl.closest ? targetEl.closest('[data-fid]') : null;
+  if (host) {
+    const hit = [...state.byId.values()].find((n) => hexId(n.id) === host.dataset.fid);
+    if (hit) parentId = hit.url ? (hit.parentId || parentId) : hit.id;
+  }
+  try {
+    await chrome.bookmarks.create({ parentId, title: url.replace(/^[a-z]+:\/\/(www\.)?/i, ''), url: withScheme(url) });
+    await refresh();
+    toast('已添加书签');
+  } catch {
+    toast('添加失败');
+  }
 }
 
-async function main() {
+function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '1.21.0';
+    let ver = '2.0.0';
+    let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }
     }
-    if (el) el.textContent = `v${ver}`;
+    if (el) el.textContent = `v${ver} · ${mode}`;
   })();
 
-  try {
-    await init();
-  } catch (err) {
+  init().catch((err) => {
     console.error('[书签桌面] 启动失败', err);
     const empty = $('empty');
     const title = $('emptyTitle');
@@ -2086,7 +2979,7 @@ async function main() {
     if (empty) empty.hidden = false;
     if (title) title.textContent = '出了点问题';
     if (sub) sub.textContent = String((err && err.message) || err);
-  }
+  });
 }
 
 main();
