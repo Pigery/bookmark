@@ -3003,7 +3003,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.3';
+    let ver = '2.0.4';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }
