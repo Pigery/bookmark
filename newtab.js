@@ -1125,15 +1125,26 @@ function inferMode(node) {
   return score >= 1 ? MODE_ICON : MODE_LIST;
 }
 
+/* 优先级：单条书签 > 最近的设过显示方式的祖先文件夹 > 自动推断。
+   v2.0.1 修正：原来这里只读「自己的文件夹 id」，于是点卡片上的「图标显示」
+   只把「卡片自己的布局」换了，里面这些按站点推断成列表的书签原地不动 ——
+   看起来就像点了没反应。真正生效的规则是「文件夹设成列表后，里面新加的书签
+   也跟着是列表」，那条规则本来就在 folderModeInherit 里，只是没被用上。 */
 function modeOf(node) {
   if (!node) return MODE_ICON;
-  const m = node.url ? state.views.items[node.id] : state.views.folders[node.id];
+  if (!node.url) {
+    const fm = state.views.folders[node.id];
+    return isMode(fm) ? fm : MODE_ICON;
+  }
+  const m = state.views.items[node.id];
   if (isMode(m)) return m;
-  if (!node.url) return MODE_ICON;
+  const inherited = folderModeInherit(node);
+  if (isMode(inherited)) return inherited;
   return inferMode(node);
 }
 
-/* 给文件夹改显示方式：文件夹覆盖会连带影响里面没手动设过的书签 */
+/* 给文件夹改显示方式：文件夹覆盖会连带影响里面没手动设过的书签
+   （靠 modeOf 往上找祖先实现，这里只负责写库） */
 async function setFolderMode(node, mode) {
   if (!node || !node.id) return;
   state.views.folders[node.id] = mode;
@@ -2963,7 +2974,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.0';
+    let ver = '2.0.1';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }
