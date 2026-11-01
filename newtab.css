@@ -1155,6 +1155,19 @@ body.is-dragging .zoom-folder {
 .item.insert-before::before { top: -1px; }
 .item.insert-after::before { bottom: -1px; }
 
+/* 图标方块是横排的，插入提示要竖起来才看得懂往哪边插 */
+.item.tile.insert-before::before,
+.item.tile.insert-after::before {
+  top: 4px;
+  bottom: 4px;
+  left: auto;
+  right: auto;
+  width: 3px;
+  height: auto;
+}
+.item.tile.insert-before::before { left: -2px; }
+.item.tile.insert-after::before { right: -2px; }
+
 /* 搜索结果来源 */
 .item .src {
   flex: 0 0 auto;

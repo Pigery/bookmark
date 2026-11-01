@@ -1470,12 +1470,11 @@ function buildZone(node, opts) {
   }
 
   if (items.length) {
-    /* 一张卡里可以同时有图标和列表：每条书签各按自己的显示方式决定怎么画，
-       再把「连续的同类」归成一段（图标一段用 tile-band，列表一段用 zone-grid），
-       从上往下依次排在卡片体里。
-       合成卡（「未分组」）的 id 是 `__loose__:1` 这种假 id，folderModeInherit()
-       沿 parentId 走真实树永远走不到它，所以合成卡里的书签改成跟随这张卡：
-       卡是图标就按图标、卡是列表就按列表。单条书签自己设过的始终优先。 */
+    /* v2.0.5：图标永远在卡片内置顶，列表排在后面。
+       每条书签各自决定长什么样（单条设定 > 跟随文件夹 > 自动推断），
+       然后按「图标先、列表后」两堆排，两堆内部都保持书签原本的顺序。
+       同一堆里可能还会因为「有的跟随文件夹、有的自己设过」而分成几段，
+       所以还要把连续的同类归成一段：图标段用 tile-band，列表段用 zone-grid。 */
     const zoneMode = modeOf(node);
     const looseKey = node.id ? String(node.id).startsWith('__loose__:') : false;
     const modeFor = (it) => {
@@ -1484,14 +1483,21 @@ function buildZone(node, opts) {
       return looseKey ? zoneMode : modeOf(it);
     };
 
-    /* 相邻且同模式的归成一段，段与段之间不断开顺序 */
+    const tiles = items.filter((it) => modeFor(it) !== MODE_LIST);
+    const lists = items.filter((it) => modeFor(it) === MODE_LIST);
+
+    /* 一段一类地铺：先所有图标段，再所有列表段 */
     const runs = [];
-    items.forEach((it) => {
-      const m = modeFor(it);
-      const last = runs[runs.length - 1];
-      if (last && last.mode === m) last.nodes.push(it);
-      else runs.push({ mode: m, nodes: [it] });
-    });
+    const group = (arr) => {
+      arr.forEach((it) => {
+        const m = modeFor(it);
+        const last = runs[runs.length - 1];
+        if (last && last.mode === m) last.nodes.push(it);
+        else runs.push({ mode: m, nodes: [it] });
+      });
+    };
+    group(tiles);
+    group(lists);
 
     runs.forEach((run) => {
       if (run.mode === MODE_LIST) {
@@ -2036,6 +2042,53 @@ function bindItemDrag(el, node) {
     e.stopPropagation();
   });
   el.addEventListener('dragend', endDrag);
+  bindItemDrop(el, node);
+}
+
+/* ---------- 卡片内拖拽排序 ----------
+   落到某一项的「左半边」= 插到它前面，「右半边」= 插到它后面。
+   同一张卡里图标/列表都能互相插，跨卡片也行 —— 拖过去就按它自己的
+   形态归队（图标进图标堆、列表进列表堆），插到落点那一项的旁边。
+   左/右是按图标方块还是按列表行取轴：方块横排看左右，列表竖排看上下。 */
+const ITEM_EDGE = 0.5;
+
+function itemEdgeOf(el, e) {
+  const r = el.getBoundingClientRect();
+  if (el.classList.contains('tile')) {
+    // 图标方块是横排的，按左右分
+    return e.clientX < r.left + r.width * ITEM_EDGE ? 'before' : 'after';
+  }
+  // 列表行是竖排的，按上下分
+  return e.clientY < r.top + r.height * ITEM_EDGE ? 'before' : 'after';
+}
+
+function bindItemDrop(el, node) {
+  el.addEventListener('dragover', (e) => {
+    const src = state.dragNode;
+    if (!src || !src.url) return;          // 文件夹不参与项间排序
+    if (String(src.id) === String(node.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const edge = itemEdgeOf(el, e);
+    el.classList.toggle('insert-before', edge === 'before');
+    el.classList.toggle('insert-after', edge === 'after');
+    el.classList.remove('drop-active');
+  });
+  el.addEventListener('dragleave', (e) => {
+    if (el.contains(e.relatedTarget)) return;
+    el.classList.remove('insert-before', 'insert-after');
+  });
+  el.addEventListener('drop', (e) => {
+    const src = state.dragNode;
+    if (!src || !src.url) return;
+    if (String(src.id) === String(node.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const edge = itemEdgeOf(el, e);
+    endDrag();
+    reorderItem(src, node, edge);
+  });
 }
 
 function bindSubDrag(el, node) {
@@ -2228,6 +2281,83 @@ async function reorderZone(src, target, edge) {
   } catch {
     toast('调整顺序失败');
   }
+}
+
+/* 一条书签插到另一条前面/后面（v2.0.5）。
+   规矩：图标只在图标堆里排，列表只在列表堆里排 —— 因为图标永远置顶，
+   把图标拖进列表中间也会被重新拉回上面，看着像没生效，所以直接不让。
+   拖到不同类的那一项上 = 换成那一项的形态（图标↔列表），并插到它旁边。
+
+   插入点按 chrome 里真实的 children 顺序算，再修正成：
+   同堆内的相邻位置。跨堆时先改形态，再按新堆的顺序插入。 */
+async function reorderItem(src, target, edge) {
+  if (!src || !src.url || !target) return;
+  if (String(src.id) === String(target.id)) return;
+  if (!HAS_BOOKMARKS) { toast('预览模式不能拖动'); return; }
+
+  const targetParentId = target.parentId;
+  if (!targetParentId) return;
+  const parent = state.byId.get(targetParentId);
+  if (!parent) return;
+
+  const srcMode = modeOf(src);
+  const targetMode = modeOf(target);
+  const sameKind = srcMode === targetMode;
+
+  try {
+    /* 跨类拖拽：客户端明确要「图标拖进来就是图标、列表拖进来就是列表」，
+       跨类时反而是把这一条改成落点的形态，它才排得进那一堆。 */
+    if (!sameKind) {
+      await setItemModeQuiet(src, targetMode);
+    }
+
+    const mode = sameKind ? srcMode : targetMode;
+    // 目标文件夹里，这一类书签按真实顺序排出来的堆
+    const heap = childrenOf(parent)
+      .filter((c) => c.url && modeOf(c) === mode);
+    let at = heap.findIndex((c) => String(c.id) === String(target.id));
+    if (at < 0) at = heap.length;
+    if (edge === 'after') at += 1;
+
+    const sameParent = String(src.parentId) === String(targetParentId);
+    let index;
+    if (sameParent) {
+      // 同文件夹：摘掉自己后修正下标
+      const all = childrenOf(parent);
+      const from = all.findIndex((c) => String(c.id) === String(src.id));
+      // 落点这一项在整个 children 里的真实下标
+      const anchorId = edge === 'after' ? (heap[at] ? heap[at].id : null) : target.id;
+      if (anchorId == null) {
+        index = all.length;
+      } else {
+        index = all.findIndex((c) => String(c.id) === String(anchorId));
+        if (index < 0) index = all.length;
+      }
+      if (from >= 0 && from < index) index -= 1;
+      if (from === index) return;              // 原地不动
+    } else {
+      index = childrenOf(parent).length;        // 跨卡：先放到末尾，下面对齐
+      const anchorId = edge === 'after' ? (heap[at] ? heap[at].id : null) : target.id;
+      if (anchorId != null) {
+        const all = childrenOf(parent);
+        const i = all.findIndex((c) => String(c.id) === String(anchorId));
+        if (i >= 0) index = i;
+      }
+    }
+
+    await chrome.bookmarks.move(src.id, { parentId: targetParentId, index });
+    const where = edge === 'before' ? '前面' : '后面';
+    toast(`已插到「${target.title || target.url}」${where}`);
+    await refresh();
+  } catch {
+    toast('调整顺序失败');
+  }
+}
+
+/* 只写库、不重绘：拖拽里连着调好几次时不要每次都重绘 */
+async function setItemModeQuiet(node, mode) {
+  state.views.items[node.id] = mode;
+  await storeSet('views', state.views);
 }
 
 /* 置顶图标拖到两个图标之间任意排序（不是两两互换） */
@@ -3003,7 +3133,7 @@ async function dropLink(link, targetEl) {
 function main() {
   (function stampBuild() {
     const el = $('build');
-    let ver = '2.0.4';
+    let ver = '2.0.5';
     let mode = HAS_CHROME ? '扩展' : '预览';
     if (HAS_CHROME && chrome.runtime && chrome.runtime.getManifest) {
       try { ver = chrome.runtime.getManifest().version; } catch { /* 用兜底 */ }
