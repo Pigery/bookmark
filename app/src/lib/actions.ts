@@ -231,11 +231,6 @@ export function toggleKeyHint(force?: boolean): void {
   bump();
 }
 
-export function setDropHint(on: boolean): void {
-  state.dropHint = on;
-  bump();
-}
-
 /* Chrome 里书签被别处改动（装了新扩展、手机上收藏、别的窗口拖过）时跟着刷新。
    老版本是在 bindUI() 里注册五个事件 + 120ms 防抖，这里照做。 */
 let watchInstalled = false;

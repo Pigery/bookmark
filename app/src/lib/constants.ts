@@ -3,7 +3,7 @@
 import type { Mode, SearchEngine, WallBlur, WallpaperPreset, ZoneMode } from './types';
 
 /** 水印兜底版本号：扩展里优先读 manifest 的 version，预览模式显示这个 */
-export const APP_VERSION = '3.1.0';
+export const APP_VERSION = '3.2.0';
 
 /* 8 套渐变：深色 5、浅色 3。light:true 会把整页配色切到浅色纸。
    css 直接写进 #bg 的 background，不需要图片、不联网 */
@@ -55,9 +55,6 @@ export const FOLDER_EDGE = 0.3;
 /** 布局同步 */
 export const LAYOUT_APP = 'bookmark-desktop-layout';
 export const LAYOUT_SCHEMA = 1;
-export const SHARE_PREFIX_GZ = 'bd1.';
-export const SHARE_PREFIX_RAW = 'bd0.';
-export const BD_MIME = 'application/x-bookmark-desktop';
 
 /** 必应壁纸 */
 export const BING_DAYS = 9;

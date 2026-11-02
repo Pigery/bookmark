@@ -18,3 +18,15 @@
 #root {
   display: contents;
 }
+
+/* 布局同步面板的两个输入框。老版的 72px 是给「一行分享文本」留的，
+   现在要装一整份缩进 JSON，撑高一点；导出那格只读，再高一些，
+   一眼能看出整份布局的形状（内容仍可滚动、手动拉高） */
+.sync-input {
+  height: 108px;
+}
+.sync-out {
+  height: 168px;
+  background: rgba(20, 22, 26, 0.03);
+  cursor: text;
+}

@@ -12,7 +12,7 @@ import { storeSet } from './chrome';
 import { bump, state, toast } from './store';
 import { childrenOf, foldersOf, isSelfOrDescendant, modeOf, resolveIconEntry } from './tree';
 import { refresh, isPinned } from './actions';
-import { importLayoutFile, isFilesDrag, looksLikeLayout, setDropHint, startPreview } from './sync';
+import { setDropHint } from './sync';
 import { hexId, looksLikeUrl, withScheme } from './utils';
 import type { BmNode } from './types';
 
@@ -508,10 +508,16 @@ export function installDrag(): void {
 
   document.addEventListener('dragend', () => endDrag());
 
-  /* 从网页里拖文件 / 链接进来（老版本 bindUI 末尾那三段） */
+  /* 从网页里拖链接进来（老版本 bindUI 末尾那段） */
   document.addEventListener('dragover', (e) => {
     if (state.dragNode) return;
-    if (!isFilesDrag(e) && !linkOf(e)) return;
+    const types = (e.dataTransfer && e.dataTransfer.types) || [];
+    // 文件不再支持导入，但也别让浏览器把 pdf / 图片当成导航打开
+    if (Array.prototype.indexOf.call(types, 'Files') >= 0) {
+      e.preventDefault();
+      return;
+    }
+    if (!linkOf(e)) return;
     e.preventDefault();
     setDropHint(true);
   });
@@ -524,12 +530,10 @@ export function installDrag(): void {
   document.addEventListener('drop', async (e) => {
     if (state.dragNode) return;
     const types = (e.dataTransfer && e.dataTransfer.types) || [];
-    const hasFile = Array.prototype.indexOf.call(types, 'Files') >= 0;
-    if (hasFile) {
+    if (Array.prototype.indexOf.call(types, 'Files') >= 0) {
       e.preventDefault();
       setDropHint(false);
-      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (file) await importLayoutFile(file);
+      toast('这版不收文件了：用「布局同步」面板复制粘贴 JSON');
       return;
     }
     const link = linkOf(e);
@@ -555,10 +559,6 @@ async function dropLink(link: string, targetEl: Element | null): Promise<void> {
   const url = String(link).split('\n')[0].trim();
   if (!/^[a-z]+:\/\//i.test(url) && !looksLikeUrl(url)) {
     toast('这不是一个网址');
-    return;
-  }
-  if (looksLikeLayout(url)) {
-    await startPreview(url);
     return;
   }
   if (!HAS_BOOKMARKS) {

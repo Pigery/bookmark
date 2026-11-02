@@ -1,12 +1,15 @@
-/** 布局同步：导出 / 导入 / 分享文本（老 newtab.js 第 720~1092 行整段搬过来）。
+/** 布局同步：导出 / 导入（老 newtab.js 第 720~1092 行搬过来，传输方式改成纯 JSON 文本）。
  *
  *  只搬「怎么展示」：置顶图标顺序、图标 / 列表方式、壁纸、引擎、模糊档位。
  *  书签本身由浏览器自己同步，这里一根指头都不碰它。
  *
+ *  全程只有文本：面板里给出这份 JSON，另一边粘进去点「检查并导入」。
+ *  不落文件、不压缩、不走链接 —— 文本能进的地方（聊天框、备忘录、邮件）都能传。
+ *
  *  关键点：chrome.bookmarks 的 id 是每台设备本地分配的，同一份书签在
  *  A 机和 B 机上 id 完全不同，直接搬 id 会全部错位。所以导出时先把 id
  *  翻译成跨设备稳定的键 —— 书签用规范化 URL，文件夹用「书签栏/工具/前端」
- *  这样的标题路径 —— 导入时再翻回本机的 id。文件里不出现任何 bookmark id。
+ *  这样的标题路径 —— 导入时再翻回本机的 id。JSON 里不出现任何 bookmark id。
  *
  *  移植说明：老版本直接改 DOM 的地方（$('syncPreview').innerHTML = …、
  *  $('syncInput').value）全部换成写 state.syncPreview / state.syncError，
@@ -15,12 +18,9 @@
 import { fetchBingWallpaper } from './bing';
 import { storeSet } from './chrome';
 import {
-  BD_MIME,
   ENGINES,
   LAYOUT_APP,
   LAYOUT_SCHEMA,
-  SHARE_PREFIX_GZ,
-  SHARE_PREFIX_RAW,
   WALL_BLURS,
   WALLPAPERS,
   isMode,
@@ -262,46 +262,11 @@ export async function applyResolvedLayout(plan: LayoutPlan): Promise<void> {
   toast(`已导入：置顶 ${state.icons.length} · 显示方式 ${countViews(plan)}`);
 }
 
-/* ---------- 分享文本：gzip + base64url ----------
-   bd1. 表示 gzip 过的，bd0. 表示没压的原文 */
-export function bytesToB64url(bytes: Uint8Array): string {
-  let s = '';
-  bytes.forEach((b) => { s += String.fromCharCode(b); });
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+/* ---------- 文本进出 ---------- */
 
-export function b64urlToBytes(str: string): Uint8Array<ArrayBuffer> {
-  const s = atob(str.replace(/-/g, '+').replace(/_/g, '/'));
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i += 1) out[i] = s.charCodeAt(i);
-  return out;
-}
-
-export async function packLayout(layout: unknown): Promise<string> {
-  const json = JSON.stringify(layout);
-  if (typeof CompressionStream === 'undefined') return SHARE_PREFIX_RAW + bytesToB64url(new TextEncoder().encode(json));
-  const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('gzip'));
-  const buf = await new Response(stream).arrayBuffer();
-  const packed = SHARE_PREFIX_GZ + bytesToB64url(new Uint8Array(buf));
-  // 只有几个置顶图标的小布局，gzip 头比省下来的还多，退回不压缩，不让它变大
-  if (packed.length >= SHARE_PREFIX_RAW.length + bytesToB64url(new TextEncoder().encode(json)).length) {
-    return SHARE_PREFIX_RAW + bytesToB64url(new TextEncoder().encode(json));
-  }
-  return packed;
-}
-
-export async function unpackLayout(text: string): Promise<any> {
-  const raw = String(text || '').trim();
-  if (!raw) throw new Error('空文本');
-  if (raw.startsWith(SHARE_PREFIX_GZ)) {
-    if (typeof DecompressionStream === 'undefined') throw new Error('这个浏览器不支持解压');
-    const stream = new Blob([b64urlToBytes(raw.slice(4))]).stream().pipeThrough(new DecompressionStream('gzip'));
-    return JSON.parse(await new Response(stream).text());
-  }
-  if (raw.startsWith(SHARE_PREFIX_RAW)) {
-    return JSON.parse(new TextDecoder().decode(b64urlToBytes(raw.slice(4))));
-  }
-  return JSON.parse(raw);
+/** 面板上「导出」那格显示的内容：给人看的缩进 JSON */
+export function layoutJsonText(): string {
+  return JSON.stringify(buildLayout(), null, 2);
 }
 
 /** 复制文本：先试 clipboard API，被拒时退回 textarea + execCommand（老版本同款） */
@@ -323,17 +288,6 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function downloadLayout(layout: unknown): void {
-  const blob = new Blob([JSON.stringify(layout, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `bookmark-desktop-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-}
-
 /** 面板开合：关掉的时候把待确认的那份布局一起丢掉（老版本靠 p.hidden 判当前状态） */
 export function toggleSyncPanel(force?: boolean): void {
   const open = force == null ? !state.syncPanel : !!force;
@@ -347,51 +301,31 @@ export function hideSyncPanel(): void {
   toggleSyncPanel(false);
 }
 
-/** 判断一段文本是不是布局：先试 JSON，再看 app 标记 */
-export function looksLikeLayout(text: string): boolean {
-  const raw = String(text || '').trim();
-  if (/^bd[01]\./.test(raw)) return true;
-  try {
-    const o = JSON.parse(raw);
-    return !!(o && o.app === LAYOUT_APP);
-  } catch {
-    return false;
-  }
-}
-
 export function isLayoutObject(data: any): boolean {
   return !!(data && data.app === LAYOUT_APP);
 }
 
-export function checkLayoutFile(file: File | null | undefined): boolean {
-  if (!file) return false;
-  if (/\.(json|txt)$/i.test(file.name || '')) return true;
-  return file.type === 'application/json' || file.type === 'text/plain';
-}
-
-/** 拖文件进来时把那句「松手，把这个布局文件导进来」挂上 */
+/** 从外面拖东西进来时把那句「松手…」挂上 */
 export function setDropHint(on: boolean): void {
-  state.dropHint = !!on;
-  // 老版本靠 body 上这个类把子文件夹 / 放大层压暗，拖文件时才像「要导入了」
-  document.body.classList.toggle('is-dragging', !!on && !state.dragNode);
+  const next = !!on;
+  // 老版本靠 body 上这个类把子文件夹 / 放大层压暗，拖东西时才像「要收下了」
+  document.body.classList.toggle('is-dragging', next && !state.dragNode);
+  // dragover 一秒能触发几十次：状态没变就别 bump，否则整棵树跟着白画几十遍
+  if (state.dropHint === next) return;
+  state.dropHint = next;
   bump();
-}
-
-/* 拖进来的是文件而不是页面里的元素？ */
-export function isFilesDrag(e: DragEvent): boolean {
-  if (state.dragNode) return false;           // 内部拖拽一律不参与导入
-  const types = (e.dataTransfer && e.dataTransfer.types) || [];
-  if (types.indexOf(BD_MIME) >= 0) return false;
-  return types.indexOf('Files') >= 0;
 }
 
 /* 先把待导入的布局读出来给人看一眼，点「确认覆盖」才真的写 */
 export async function startPreview(text: string): Promise<void> {
+  const raw = String(text || '').trim();
   let data: any;
   try {
-    data = await unpackLayout(text);
+    data = JSON.parse(raw);
   } catch {
-    renderSyncError('这份内容读不出来，可能不是布局文本');
+    renderSyncError(
+      /^bd[01]\./.test(raw) ? '这是老版本的分享文本，这版只认 JSON' : '这份内容读不出来，可能不是布局文本',
+    );
     toggleSyncPanel(true);
     return;
   }
@@ -411,35 +345,12 @@ export async function startPreview(text: string): Promise<void> {
   bump();
 }
 
-export async function importLayoutFile(file: File): Promise<void> {
-  if (!checkLayoutFile(file)) { toast('只认 .json / .txt 布局文件'); return; }
-  const text = await file.text();
-  await startPreview(text);
-}
-
 /* ---------- 面板上的按钮：老版本是 bindUI 里的一串内联回调 ---------- */
 
 /** #syncCopy「复制 JSON」 */
 export async function copyLayoutJson(): Promise<void> {
-  const ok = await copyText(JSON.stringify(buildLayout(), null, 2));
+  const ok = await copyText(layoutJsonText());
   toast(ok ? '布局 JSON 已复制' : '复制失败');
-}
-
-/** #syncDownload「存成文件」 */
-export function saveLayoutFile(): void {
-  downloadLayout(buildLayout());
-  toast('已存成文件');
-}
-
-/** #syncShare「复制分享文本」 */
-export async function copyShareText(): Promise<void> {
-  try {
-    const text = await packLayout(buildLayout());
-    const ok = await copyText(text);
-    toast(ok ? `分享文本已复制（${text.length} 字）` : '复制失败');
-  } catch {
-    toast('生成分享文本失败');
-  }
 }
 
 /** #syncApply「检查并导入」：老版本读 $('syncInput').value，移植后由组件把内容传进来 */

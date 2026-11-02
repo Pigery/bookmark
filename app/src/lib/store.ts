@@ -37,7 +37,7 @@ export interface AppState {
   syncPanel: boolean;         // 布局同步面板
   helpCard: boolean;          // 快捷键卡
   zoomOpen: boolean;          // 放大层
-  dropHint: boolean;          // 拖文件进来时的提示
+  dropHint: boolean;          // 从外面拖东西进来时的提示
   modal: ModalState | null;   // 通用输入弹窗
   ctx: CtxState | null;       // 右键菜单
   ready: boolean;             // 首次数据是否已就绪

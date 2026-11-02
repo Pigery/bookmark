@@ -92,7 +92,7 @@ export function HelpCard() {
         </div>
       </dl>
       <p className="help-foot">
-        拖书签进别的卡片可以换分组，拖网页地址或 <code>.json</code> 布局进页面可以直接收下。
+        拖书签进别的卡片可以换分组，从网页里拖一条地址进来可以直接收下。
       </p>
     </div>
   );
@@ -103,10 +103,8 @@ export function DropHint() {
   return (
     <div className="drop-hint" id="dropHint" hidden={!s.dropHint}>
       <div className="drop-hint-in">
-        松手，把这个布局文件导进来
-        <div className="drop-hint-sub">
-          只读「置顶 / 显示方式 / 壁纸 / 搜索引擎」，书签一根指头都不碰，而且要先点「确认覆盖」才生效
-        </div>
+        松手，把这条地址收下来
+        <div className="drop-hint-sub">落在卡片上就收进那个分组，落在空白处就收进书签栏</div>
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 {
   "name": "bookmark-desktop",
   "private": true,
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "书签桌面：Chrome 新标签页扩展（React + TypeScript + Vite + Tailwind）",
   "type": "module",
   "scripts": {
