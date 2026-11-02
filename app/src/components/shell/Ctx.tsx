@@ -51,8 +51,8 @@ export function Ctx() {
     let top = 0;
     if (r.top + sh > window.innerHeight - 8) top = window.innerHeight - 8 - (r.top + sh);
     if (left !== sub.left || top !== sub.top) setSub({ ...sub, left, top });
-    el.style.left = left ? 'auto' : '';
-    el.style.right = left ? '100%' : '';
+    /* 翻到左边靠的是 CSS 里的 .sub-left（和老版本一样用 class，不写内联 left/right），
+       底下放不下就整体上收 —— 老版本也是只改 top */
     el.style.top = `${top}px`;
   });
 
@@ -78,8 +78,12 @@ export function Ctx() {
             .filter(Boolean)
             .join(' ') || undefined}
           onMouseEnter={() => {
+            /* 悬停到别的顶层项时收掉二级菜单 —— 但**不能**在二级菜单自己的项上收，
+               否则鼠标一进子菜单、刚碰到第一项就把子菜单抽走，看着像「添加到点不开」。
+               老版本这里注销的是子菜单内部的 .ctx-sub（子项没有下一级，等于什么都没删），
+               所以行为上是「进了子菜单就停在那儿」。 */
             if (it.children && it.children.length) open();
-            else setSub(null);
+            else if (!isSub) setSub(null);
           }}
           onClick={(e) => {
             e.stopPropagation();
@@ -95,7 +99,7 @@ export function Ctx() {
         >
           {it.label}
           {!isSub && sub && sub.index === i && it.children && it.children.length ? (
-            <div className="ctx ctx-sub" ref={subRef} style={{ top: sub.top }}>
+            <div className={['ctx', 'ctx-sub', sub.left ? 'sub-left' : ''].filter(Boolean).join(' ')} ref={subRef} style={{ top: sub.top }}>
               {renderItems(it.children, true)}
             </div>
           ) : null}
