@@ -2,11 +2,10 @@
    样式总入口。
 
    1. `styles/legacy.css` 是从老版本 `newtab.css` **逐字复制**过来的，
-      一行没改 —— 像素由它负责，这是「不能改任何样式」的保证。
+      一行没改 —— 像素由它负责，这是「视觉 1:1 移植」的保证。
       它排在最前面，所以后面 Tailwind 的 utilities 能覆盖同优先级的声明。
    2. Tailwind 的 preflight 在 tailwind.config.ts 里关掉了，
       否则它会把老 CSS 默认依赖的元素样式（* 清零、标题字重、按钮字体…）洗一遍。
-   3. 最下面那块是 shadcn/ui 要的语义变量，全部映射到老 CSS 已有的纸色刻度。
    ------------------------------------------------------------------ */
 @import './styles/legacy.css';
 
@@ -14,32 +13,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* shadcn/ui 的 token：值取自 legacy.css 的纸色，不引入第二套配色 */
-:root {
-  --sh-background: 40 33% 98%;
-  --sh-foreground: 210 3% 11%;
-  --sh-card: 0 0% 100%;
-  --sh-card-foreground: 210 3% 11%;
-  --sh-popover: 40 33% 98%;
-  --sh-popover-foreground: 210 3% 11%;
-  --sh-primary: 210 3% 11%;
-  --sh-primary-foreground: 40 33% 98%;
-  --sh-secondary: 40 12% 94%;
-  --sh-secondary-foreground: 210 3% 11%;
-  --sh-muted: 40 12% 94%;
-  --sh-muted-foreground: 210 4% 39%;
-  --sh-accent: 40 12% 94%;
-  --sh-accent-foreground: 210 3% 11%;
-  --sh-destructive: 0 62% 48%;
-  --sh-destructive-foreground: 0 0% 100%;
-  --sh-border: 210 6% 89%;
-  --sh-input: 210 6% 89%;
-  --sh-ring: 210 3% 11%;
-  --sh-radius: 13px;
-}
-
 /* React 挂载点：body 是 flex 纵向布局，这一层必须「不存在」，
-   否则老 CSS 里 header/main 直接当 body 子元素的所有选择器都会错位 */
+   否则老 CSS 里把 header/main 当 body 直属子元素的那些选择器都会错位 */
 #root {
   display: contents;
 }

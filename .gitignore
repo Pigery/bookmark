@@ -1,8 +1,16 @@
-# 依赖 / 构建产物（本项目无依赖，留作保险）
+# 依赖
 node_modules/
 
-# 临时验证脚本：一律写到系统临时目录，绝不落在这个目录里
-# （下划线开头的文件名会让 Chrome / Edge 拒绝加载整个扩展）
+# 构建产物：扩展要加载 dist/，但它由 pnpm build 生成，不进版本库
+dist/
+*.tsbuildinfo
+
+# 本地 AI 开发辅助（技能包），与扩展本身无关
+.agents/
+skills-lock.json
+
+# 临时文件：下划线开头的文件名会让 Chrome / Edge 拒绝加载整个扩展目录。
+# 临时脚本一律写到系统临时目录，绝不落在这里；下面两条只是兜底
 _*
 *.tmp
 
@@ -17,7 +25,3 @@ desktop.ini
 *.zip
 *.crx
 *.pem
-
-# v3.0.0 起：源码在 app/，构建产物在 dist/（加载扩展选 dist，但不进版本库）
-dist/
-*.tsbuildinfo

@@ -22,18 +22,6 @@ export default {
         'paper-solid': 'var(--paper-solid)',
         sheet: 'var(--sheet-bg)',
         'sheet-solid': 'var(--sheet-solid)',
-        // shadcn/ui 需要的那套语义变量，在 index.css 里映射到纸色
-        background: 'hsl(var(--sh-background))',
-        foreground: 'hsl(var(--sh-foreground))',
-        border: 'hsl(var(--sh-border))',
-        input: 'hsl(var(--sh-input))',
-        ring: 'hsl(var(--sh-ring))',
-        primary: { DEFAULT: 'hsl(var(--sh-primary))', foreground: 'hsl(var(--sh-primary-foreground))' },
-        secondary: { DEFAULT: 'hsl(var(--sh-secondary))', foreground: 'hsl(var(--sh-secondary-foreground))' },
-        muted: { DEFAULT: 'hsl(var(--sh-muted))', foreground: 'hsl(var(--sh-muted-foreground))' },
-        accent: { DEFAULT: 'hsl(var(--sh-accent))', foreground: 'hsl(var(--sh-accent-foreground))' },
-        popover: { DEFAULT: 'hsl(var(--sh-popover))', foreground: 'hsl(var(--sh-popover-foreground))' },
-        destructive: { DEFAULT: 'hsl(var(--sh-destructive))', foreground: 'hsl(var(--sh-destructive-foreground))' },
       },
       borderRadius: {
         pill: 'var(--r-pill)',
@@ -41,9 +29,6 @@ export default {
         sheet: 'var(--r-sheet)',
         card: 'var(--r-card)',
         pop: 'var(--r-pop)',
-        lg: 'var(--sh-radius)',
-        md: 'calc(var(--sh-radius) - 2px)',
-        sm: 'calc(var(--sh-radius) - 4px)',
       },
       fontSize: {
         1: 'var(--fs-1)',
