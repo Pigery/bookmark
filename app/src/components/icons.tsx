@@ -46,6 +46,19 @@ export const GridIcon = (p: P) => (
   </svg>
 );
 
+/** 混搭：左边一个方块（图标），右边两行（列表） */
+export const MixIcon = (p: P) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" {...p}>
+    <path
+      d="M3.5 4.5a1.4 1.4 0 0 1 1.4-1.4h4.2a1.4 1.4 0 0 1 1.4 1.4v4.2a1.4 1.4 0 0 1-1.4 1.4H4.9a1.4 1.4 0 0 1-1.4-1.4z"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    />
+    <path d="M13.5 6h7M13.5 10h7M4 16.5h16M4 20h16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+
 export const Close = (p: P) => (
   <svg viewBox="0 0 24 24" aria-hidden="true" {...p}>
     <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />

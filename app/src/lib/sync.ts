@@ -24,9 +24,10 @@ import {
   WALL_BLURS,
   WALLPAPERS,
   isMode,
+  isZoneMode,
 } from './constants';
 import { bump, state, toast } from './store';
-import type { BmNode, Mode } from './types';
+import type { BmNode, Mode, ZoneMode } from './types';
 import { applyWallpaper } from './wallpaper';
 
 /** 布局文件里的偏好：只认这三个键，别的字段一律不管 */
@@ -43,14 +44,14 @@ export interface Layout {
   exportedAt: string;
   prefs: { wallpaper: string; wallBlur: string; engine: string };
   icons: string[];
-  views: { items: Record<string, Mode>; folders: Record<string, Mode> };
+  views: { items: Record<string, Mode>; folders: Record<string, ZoneMode> };
 }
 
 /** 布局翻译回本机 id 之后的计划：还没写库，先给人看一眼 */
 export interface LayoutPlan {
   icons: string[];
   items: Record<string, Mode>;
-  folders: Record<string, Mode>;
+  folders: Record<string, ZoneMode>;
   missIcons: number;
   missViews: number;
   prefs: LayoutPrefs;
@@ -131,7 +132,7 @@ export function buildLayout(): Layout {
     const node = state.byId.get(id);
     if (node && node.url) items[normUrl(node.url)] = state.views.items[id];
   });
-  const folders: Record<string, Mode> = {};
+  const folders: Record<string, ZoneMode> = {};
   Object.keys(state.views.folders).forEach((id) => {
     const path = paths.get(id);
     if (path) folders[path] = state.views.folders[id];
@@ -175,7 +176,7 @@ export function resolveLayout(data: any): LayoutPlan {
   Object.keys(folders).forEach((p) => {
     const id = folderIndex.get(p);
     const v = folders[p];
-    if (!id || !isMode(v)) { plan.missViews += 1; return; }
+    if (!id || !isZoneMode(v)) { plan.missViews += 1; return; }
     plan.folders[id] = v;
   });
 

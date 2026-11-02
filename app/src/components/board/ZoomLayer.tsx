@@ -3,12 +3,12 @@
 import { useEffect } from 'react';
 import { bump, useApp } from '../../lib/store';
 import { MODE_LIST } from '../../lib/constants';
-import { foldersOf, linksOf, modeOf } from '../../lib/tree';
+import { foldersOf, linksOf } from '../../lib/tree';
 import { closeZoom, goBack, openZoom } from '../../lib/nav';
 import { showFolderMenu, showZoneBlankMenu } from '../../lib/menus';
 import { reg } from '../../lib/drag';
 import { Arrow, Back, Close, Folder } from '../icons';
-import { ItemRow, TileView, ViewToggle } from './bits';
+import { ItemRow, TileView, ViewSwitch, splitRuns } from './bits';
 
 /** 老版本：max(320, min(920, vw-96)) × max(240, min(600, vh-112)) */
 function zoomSize() {
@@ -43,7 +43,6 @@ export function ZoomLayer() {
   const { w, h } = zoomSize();
   const parent = node.parentId ? s.byId.get(String(node.parentId)) : null;
   const canBack = !!(parent && parent !== s.bar);
-  const mode = modeOf(node);
   const count = items.length;
 
   return (
@@ -73,7 +72,7 @@ export function ZoomLayer() {
             </span>
           </div>
           <span className="zoom-meta">{count ? `${count} 个书签` : '空的'}</span>
-          {count ? <ViewToggle node={node} /> : null}
+          {count ? <ViewSwitch node={node} /> : null}
           {canBack ? (
             <button
               className="zoom-back"
@@ -152,18 +151,20 @@ export function ZoomLayer() {
           {items.length ? (
             <>
               {subs.length ? <div className="zoom-section-label">书签</div> : null}
-              {mode === MODE_LIST ? (
-                <div className="zoom-list">
-                  {items.map((it) => (
-                    <ItemRow key={it.id} node={it} />
-                  ))}
-                </div>
-              ) : (
-                <div className="tile-band">
-                  {items.map((it) => (
-                    <TileView key={it.id} node={it} />
-                  ))}
-                </div>
+              {splitRuns(items).map((run, i) =>
+                run.mode === MODE_LIST ? (
+                  <div className="zoom-list" key={`l${i}`}>
+                    {run.nodes.map((it) => (
+                      <ItemRow key={it.id} node={it} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="tile-band" key={`t${i}`}>
+                    {run.nodes.map((it) => (
+                      <TileView key={it.id} node={it} />
+                    ))}
+                  </div>
+                ),
               )}
             </>
           ) : null}

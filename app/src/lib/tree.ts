@@ -2,17 +2,10 @@
  *  这一层全是纯逻辑，老版本怎么算的，这里就怎么算 —— 连注释里的来由都一起搬。 */
 import { HAS_BOOKMARKS, pickBar } from './chrome';
 import { storeSet, storeGet } from './chrome';
-import {
-  LIST_PATH,
-  MODE_ICON,
-  MODE_LIST,
-  SITE_ICON,
-  SITE_LIST,
-  isMode,
-} from './constants';
+import { MODE_ICON, MODE_LIST, MODE_MIX, isZoneMode } from './constants';
 import { mockTree } from './mock';
 import { state, bump } from './store';
-import type { BmNode, IconEntry, SearchHit } from './types';
+import type { BmNode, IconEntry, Mode, SearchHit, ZoneMode } from './types';
 
 export function childrenOf(node: BmNode | null | undefined): BmNode[] {
   return (node && node.children) || [];
@@ -54,67 +47,77 @@ export async function loadTree(): Promise<BmNode> {
   return state.tree;
 }
 
-/** 只按书签本身打分，不读 state —— 方便单独测。
- *  v2.0.2 修正：原来 score 从 0 起步，而判图标要 >= 1，于是普通网址
- *  （github / google / 百度 / 淘宝 …）永远停在 0 分，全被判成列表。
- *  改成从 +1 起步：**默认就是图标**，只有站点性质 / 路径 / 标题确实像篇文章时才扣到列表。 */
-export function inferMode(node: BmNode | null | undefined): 'icon' | 'list' {
-  const url = String((node && node.url) || '');
-  if (!url) return MODE_ICON;
-  let score = 1;
-  const host = url.replace(/^[a-z]+:\/\//i, '').split(/[/?#]/)[0] || '';
-  const rest = url.replace(/^[a-z]+:\/\/([^/?#]+)/i, '');
-  // 站点性质
-  if (SITE_LIST.test(host)) score -= 2;
-  if (SITE_ICON.test(host)) score += 2;
-  // 本地地址、内网后台：一律图标
-  if (/^(https?:\/\/)?(localhost|127\.0\.0\.1|192\.168\.|10\.)/i.test(url)) score += 3;
-  // 路径深度：/a/b 这种多半是具体页面
-  if (LIST_PATH.test(rest) || /\.md$/i.test(rest)) score -= 2;
-  const depth = rest.split('/').filter(Boolean).length;
-  if (depth >= 2) score -= 1;
-  if (depth >= 3) score -= 1;
-  // 标题长度：长的像文章
-  const title = String((node && node.title) || '');
-  if (title.length >= 24) score -= 2;
-  else if (title.length >= 14) score -= 1;
-  // 平局判给列表（score >= 1 才是图标）
-  return score >= 1 ? MODE_ICON : MODE_LIST;
+/** 「未分组」假卡片的 id 前缀：`__loose__:<父文件夹 id>` */
+export const LOOSE_PREFIX = '__loose__:';
+
+/** 假卡片代表的是哪个真文件夹（真文件夹就是它自己） */
+export function realFolderId(node: BmNode | null | undefined): string {
+  const id = String((node && node.id) || '');
+  return id.startsWith(LOOSE_PREFIX) ? id.slice(LOOSE_PREFIX.length) : id;
 }
 
-/** 让「文件夹设成列表后，里面新加的书签也跟着是列表」成立：
- *  往上找最近一个设过的祖先文件夹 */
-export function folderModeInherit(node: BmNode | null | undefined): 'icon' | 'list' | null {
-  let p = node && node.parentId ? state.byId.get(node.parentId) : null;
+/** 从某个文件夹往上找第一个设过显示方式的人（包含它自己）。
+ *  v3.1.0 起不再有「自动推断」，所以「没设过」就一路往上，最后落到默认的列表。 */
+function modeUpOf(folderId: string): ZoneMode | null {
+  let p = folderId ? state.byId.get(String(folderId)) : null;
   while (p) {
     const m = state.views.folders[p.id];
-    if (isMode(m)) return m;
-    p = p.parentId ? state.byId.get(p.parentId) : null;
+    if (isZoneMode(m)) return m;
+    p = p.parentId ? state.byId.get(String(p.parentId)) : null;
   }
   return null;
 }
 
-/** 优先级：单条书签 > 最近的设过显示方式的祖先文件夹 > 自动推断 */
-export function modeOf(node: BmNode | null | undefined): 'icon' | 'list' {
-  if (!node) return MODE_ICON;
-  if (!node.url) {
-    const fm = state.views.folders[node.id];
-    return isMode(fm) ? fm : MODE_ICON;
-  }
-  const m = state.views.items[node.id];
-  if (isMode(m)) return m;
-  const inherited = folderModeInherit(node);
-  if (isMode(inherited)) return inherited;
-  return inferMode(node);
+/** 一张卡片（真文件夹或「未分组」假卡）当前的显示方式：图标 / 列表 / 混搭 */
+export function zoneModeOf(node: BmNode | null | undefined): ZoneMode {
+  if (!node) return MODE_LIST;
+  return modeUpOf(realFolderId(node)) || MODE_LIST;
 }
 
-/** 给文件夹改显示方式：文件夹覆盖会连带影响里面没手动设过的书签
- *  （靠 modeOf 往上找祖先实现，这里只负责写库） */
-export async function setFolderMode(node: BmNode, mode: 'icon' | 'list'): Promise<void> {
+/** 单条书签的显示方式。
+ *  卡片是整齐的图标/列表时，听卡片的（这样整卡切换才真的整卡）；
+ *  卡片是混搭时，看它自己的记录，没记录就按默认的列表。 */
+export function modeOf(node: BmNode | null | undefined): Mode {
+  if (!node) return MODE_LIST;
+  const parentId = node.parentId ? String(node.parentId) : '';
+  const fm = parentId ? modeUpOf(parentId) : null;
+  if (fm === MODE_ICON || fm === MODE_LIST) return fm;
+  const own = state.views.items[node.id];
+  return own === MODE_ICON || own === MODE_LIST ? own : MODE_LIST;
+}
+
+/** 给卡片改显示方式。切到整齐的图标/列表时**不删**逐条的记录 ——
+ *  删了用户辛苦排的混搭就没了，下次点「混搭」还得重排。 */
+export async function setFolderMode(node: BmNode, mode: ZoneMode): Promise<void> {
   if (!node || !node.id) return;
-  state.views.folders[node.id] = mode;
+  state.views.folders[realFolderId(node)] = mode;
   await storeSet('views', state.views);
   bump();
+}
+
+/** 点「混搭」：照每条记着的来（没记过的按列表）。
+ *  这里**不动**逐条记录 —— 用户点了整齐的图标/列表之后，点回「混搭」就该原样回来。 */
+export async function restoreMix(node: BmNode | null | undefined): Promise<void> {
+  const id = realFolderId(node);
+  if (!id) return;
+  state.views.folders[id] = MODE_MIX;
+  await storeSet('views', state.views);
+  bump();
+}
+
+/** 卡片现在是整齐的图标/列表，用户要单独改某一条 —— 先把**现在看到的**记成每条的样子
+ *  （旧记录一律覆盖，因为现在这一整卡的样子才是用户此刻的意图），再把卡片标成混搭。
+ *  不这么做的话，整齐态会把那条新记录盖掉，用户点了等于没点。 */
+export async function freezeMix(folderId: string | undefined): Promise<void> {
+  const id = String(folderId || '');
+  if (!id) return;
+  const now = zoneModeOf(state.byId.get(id) || ({ id } as BmNode));
+  if (now === MODE_MIX) return;
+  childrenOf(state.byId.get(id)).forEach((c) => {
+    if (c.url) state.views.items[c.id] = now;
+  });
+  state.views.folders[id] = MODE_MIX;
+  await storeSet('views', state.views);
 }
 
 /** 置顶清单里的一格：可能是 id，也可能是抓下来的快照 */

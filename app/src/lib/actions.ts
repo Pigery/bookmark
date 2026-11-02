@@ -5,7 +5,7 @@ import { BING_CACHE_MS } from './constants';
 import { HAS_BOOKMARKS, storeSet } from './chrome';
 import { loadBingPanel } from './bing';
 import { bump, state, toast, type CtxState } from './store';
-import { current, loadTree, resolveIconEntry } from './tree';
+import { current, freezeMix, loadTree, resolveIconEntry } from './tree';
 import { hideSyncPanel as syncHide, toggleSyncPanel as syncToggle } from './sync';
 import type { BmNode, Mode } from './types';
 import { withScheme } from './utils';
@@ -182,6 +182,9 @@ export async function unpinIcon(node?: BmNode | null): Promise<void> {
 
 /* ---------- 单条书签的显示方式 ---------- */
 export async function setItemMode(node: BmNode, mode: Mode): Promise<void> {
+  /* 卡片现在是整齐的图标/列表时，先把现状冻成混搭，再改这一条 ——
+     否则整齐态会盖掉这条记录，用户刚才点的那一下等于没发生 */
+  await freezeMix(node.parentId);
   state.views.items[node.id] = mode;
   await storeSet('views', state.views);
   bump();

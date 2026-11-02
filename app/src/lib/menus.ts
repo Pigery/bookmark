@@ -1,11 +1,11 @@
 /** 右键菜单的内容：每一层、每一类节点该出现哪些项。
  *  顺序、文案、分隔线位置照抄老版本 showItemMenu / showFolderMenu /
  *  showZoneBlankMenu / showStageMenu / showTrayMenu。 */
-import { MODE_ICON, MODE_LIST, isMode } from './constants';
+import { MODE_ICON, MODE_LIST, MODE_MIX, isMode } from './constants';
 import { openUrl } from './chrome';
 import { storeSet } from './chrome';
 import { bump, state, toast, type CtxItem } from './store';
-import { current, childrenOf, foldersOf, modeOf, setFolderMode } from './tree';
+import { current, childrenOf, foldersOf, modeOf, restoreMix, setFolderMode, zoneModeOf } from './tree';
 import { crumbOf, isSelfOrDescendant } from './tree';
 import {
   createBookmark,
@@ -24,7 +24,7 @@ import {
 } from './actions';
 import { enter, goBack } from './nav';
 import { moveIcon } from './drag';
-import type { BmNode } from './types';
+import type { BmNode, ZoneMode } from './types';
 
 type Entry = CtxItem | '-';
 
@@ -67,8 +67,11 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
-async function setFolderModeThen(node: BmNode, mode: 'icon' | 'list'): Promise<void> {
-  await setFolderMode(node, mode);
+async function setFolderModeThen(node: BmNode, mode: ZoneMode): Promise<void> {
+  /* 选「混搭」= 把现在的样子记下来，所以要先冻结；选整齐的图标/列表只写卡片本身，
+     逐条的记录一直留着，回头再点「混搭」就原样回来 */
+  if (mode === MODE_MIX) await restoreMix(node);
+  else await setFolderMode(node, mode);
   bump();
 }
 
@@ -94,7 +97,7 @@ export function showItemMenu(node: BmNode, x: number, y: number): void {
     { label: '以图标显示', on: mode === MODE_ICON, run: () => setItemMode(node, MODE_ICON) },
     { label: '以列表显示', on: mode === MODE_LIST, run: () => setItemMode(node, MODE_LIST) },
   ];
-  if (explicit) items.push({ label: '恢复自动显示', run: () => resetItemMode(node) });
+  if (explicit) items.push({ label: '跟随卡片显示', run: () => resetItemMode(node) });
   items.push(
     '-',
     { label: isPinned(node.id) ? '已在桌面上' : '置顶到桌面图标', run: () => pinIcon(node) },
@@ -117,7 +120,7 @@ export function showItemMenu(node: BmNode, x: number, y: number): void {
 }
 
 export function showFolderMenu(node: BmNode, x: number, y: number): void {
-  const mode = modeOf(node);
+  const mode = zoneModeOf(node);
   const isReal = state.byId.has(String(node.id));
   const items: Entry[] = [{ label: '打开', run: () => enter(node) }];
   if (isReal) {
@@ -128,6 +131,7 @@ export function showFolderMenu(node: BmNode, x: number, y: number): void {
       '-',
       { label: '图标显示', on: mode === MODE_ICON, run: () => setFolderModeThen(node, MODE_ICON) },
       { label: '列表显示', on: mode === MODE_LIST, run: () => setFolderModeThen(node, MODE_LIST) },
+      { label: '混搭显示', on: mode === 'mix', run: () => setFolderModeThen(node, 'mix') },
       { label: '按名称排序', run: () => sortFolder(node) },
       '-',
       { label: '重命名', run: () => renameNode(node) },
@@ -143,13 +147,14 @@ export function showZoneBlankMenu(node: BmNode, x: number, y: number): void {
   if (!target) return;
   const isRoot = !!(state.bar && String(target.id) === String(state.bar.id));
   const isReal = state.byId.has(String(target.id)) && !isRoot;
-  const mode = modeOf(target);
+  const mode = zoneModeOf(target);
   const items: Entry[] = [
     { label: '新建书签', run: () => createBookmark(target) },
     { label: '新建子文件夹', run: () => createFolder(target) },
     '-',
     { label: '图标显示', on: mode === MODE_ICON, run: () => setFolderModeThen(target, MODE_ICON) },
     { label: '列表显示', on: mode === MODE_LIST, run: () => setFolderModeThen(target, MODE_LIST) },
+    { label: '混搭显示', on: mode === 'mix', run: () => setFolderModeThen(target, 'mix') },
     { label: '按名称排序', run: () => sortFolder(target) },
   ];
   if (isReal) {

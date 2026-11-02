@@ -1743,6 +1743,24 @@ body.is-dragging .zoom-folder {
 .zone-view:focus-visible { opacity: 1; }
 .zone-view:hover { color: var(--ink); background: var(--paper-hover); }
 
+/* v3.1.0：显示方式变成三态开关（图标 / 列表 / 混搭），`.on` 标出当前这一态。
+   三个小按钮包在一层里，间距和原来单按钮的位置对齐。 */
+.zone-views {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: 2px;
+}
+.zone-views .zone-view { margin-left: 0; }
+.zone-view.on {
+  color: var(--accent);
+  background: rgba(47, 107, 255, 0.1);
+  opacity: 1;
+}
+.zone-head:hover .zone-view.on,
+.zoom-head:hover .zone-view.on { opacity: 1; }
+
 /* ============ 版本水印（用于确认浏览器加载的是哪一版） ============ */
 .build {
   position: fixed;

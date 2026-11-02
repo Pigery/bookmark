@@ -16,13 +16,18 @@ export interface BmNode {
   loose?: boolean;
 }
 
-/** 显示方式 */
+/** 单条书签的显示方式 */
 export type Mode = 'icon' | 'list';
 
-/** 显示方式的覆盖表：文件夹一份、书签一份 */
+/** 一张卡片的显示方式：整卡图标 / 整卡列表 / 混搭（每条按自己的来）
+ *  v3.1.0 起多出 'mix' 这一态 —— 混搭不是「没设置」，而是用户明确要的第三种排法。 */
+export type ZoneMode = Mode | 'mix';
+
+/** 显示方式的覆盖表：文件夹一份、书签一份。
+ *  folders 里存的是三态；items 里只存逐条记录（混搭时用，切整齐了也绝不删，好让「混搭」一键找回）。 */
 export interface Views {
   v: number;
-  folders: Record<string, Mode>;
+  folders: Record<string, ZoneMode>;
   items: Record<string, Mode>;
 }
 

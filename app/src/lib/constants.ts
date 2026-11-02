@@ -1,9 +1,9 @@
 /** 常量：壁纸、模糊档位、搜索引擎、显示方式、图标小件。
  *  值一律照抄老版本 newtab.js，改一个像素都会让移植走样。 */
-import type { Mode, SearchEngine, WallBlur, WallpaperPreset } from './types';
+import type { Mode, SearchEngine, WallBlur, WallpaperPreset, ZoneMode } from './types';
 
 /** 水印兜底版本号：扩展里优先读 manifest 的 version，预览模式显示这个 */
-export const APP_VERSION = '3.0.2';
+export const APP_VERSION = '3.1.0';
 
 /* 8 套渐变：深色 5、浅色 3。light:true 会把整页配色切到浅色纸。
    css 直接写进 #bg 的 background，不需要图片、不联网 */
@@ -36,6 +36,9 @@ export const ENGINES: SearchEngine[] = [
 export const MODE_ICON: Mode = 'icon';
 export const MODE_LIST: Mode = 'list';
 export const isMode = (v: unknown): v is Mode => v === MODE_ICON || v === MODE_LIST;
+/** 卡片的第三种排法：混搭（每条各按自己记着的显示方式来） */
+export const MODE_MIX = 'mix';
+export const isZoneMode = (v: unknown): v is ZoneMode => v === MODE_ICON || v === MODE_LIST || v === MODE_MIX;
 
 /** 内部拖拽的私有 MIME：绝不用 text/plain，否则会被当成「从外面拖进来一个链接」 */
 export const BD_DRAG = 'application/x-bd-node';
@@ -73,11 +76,6 @@ export const SVG_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4
 export const SVG_CLOSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 export const SVG_PLUS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 export const SVG_HELP = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M9.4 9.3a2.7 2.7 0 0 1 5.2 1c0 1.8-2.6 2-2.6 3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="17.1" r="1.05" fill="currentColor"/></svg>';
-
-/** 自动推断显示方式用的三条正则（照抄） */
-export const SITE_ICON = /(^|\.)(figma\.com|notion\.so|excalidraw\.com|miro\.com|vercel\.com|netlify\.app|localhost|127\.0\.0\.1|192\.168\.)/i;
-export const SITE_LIST = /(^|\.)(zhihu\.com|juejin\.cn|sspai\.com|medium\.com|ycombinator\.com|reddit\.com|news\.|blog\.|weibo\.com|bilibili\.com)/i;
-export const LIST_PATH = /(github\.com\/[^/]+\/[^/]+\/(blob|tree|issues|pull)|docs?\.|\.md$|\/(wiki|issue|post|article|p)\/)/i;
 
 /** 输入本身是网址时回车直接打开 */
 export const URL_LIKE = /^(https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,}(:\d+)?([\/?#].*)?$/i;

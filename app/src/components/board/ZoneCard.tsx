@@ -6,7 +6,7 @@ import { foldersOf, linksOf } from '../../lib/tree';
 import type { BmNode } from '../../lib/types';
 import { hexId } from '../../lib/utils';
 import { Arrow } from '../icons';
-import { ItemRow, SubfolderRow, TileView, ViewToggle, splitRuns } from './bits';
+import { ItemRow, SubfolderRow, TileView, ViewSwitch, splitRuns } from './bits';
 import { showFolderMenu, showZoneBlankMenu } from '../../lib/menus';
 import { reg } from '../../lib/drag';
 
@@ -14,7 +14,7 @@ export function ZoneCard({ node, openable }: { node: BmNode; openable: boolean }
   const subs = foldersOf(node);
   const items = linksOf(node);
   const empty = !subs.length && !items.length;
-  const runs = splitRuns(node, items);
+  const runs = splitRuns(items);
   const title = node.title || '未命名';
 
   const headKey = (e: React.KeyboardEvent) => {
@@ -68,7 +68,7 @@ export function ZoneCard({ node, openable }: { node: BmNode; openable: boolean }
           {title}
         </span>
         <span className="zone-count">{items.length}</span>
-        {items.length ? <ViewToggle node={node} /> : null}
+        {items.length ? <ViewSwitch node={node} /> : null}
         {openable ? (
           <span className="zone-open">
             <Arrow />
