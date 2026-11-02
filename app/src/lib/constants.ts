@@ -3,7 +3,7 @@
 import type { Mode, SearchEngine, WallBlur, WallpaperPreset } from './types';
 
 /** 水印兜底版本号：扩展里优先读 manifest 的 version，预览模式显示这个 */
-export const APP_VERSION = '3.0.0';
+export const APP_VERSION = '3.0.1';
 
 /* 8 套渐变：深色 5、浅色 3。light:true 会把整页配色切到浅色纸。
    css 直接写进 #bg 的 background，不需要图片、不联网 */

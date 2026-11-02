@@ -6,6 +6,7 @@ import { BING_CACHE_MS, BING_DAYS, BING_ENDPOINTS } from './constants';
 import { storeGet, storeSet } from './chrome';
 import { bump, state, toast } from './store';
 import type { BingCache, BingDay } from './types';
+import { applyWallpaper } from './wallpaper';
 
 /** 缩略图参数：原图动辄 3~8MB，画廊里只要 320 宽就够看 */
 export function bingThumb(url: string, w = 320): string {
@@ -156,10 +157,13 @@ export async function pickBingDay(day?: BingDay | null): Promise<void> {
   if (!day || !day.url) return;
   state.wallpaperBing = day.url;
   state.bingDay = day.idx;
+  /* v3.0.1 修：这里原来漏了 applyWallpaper('bing')，于是照片只写进 state 的
+     wallpaperBing、wallpaper 还停在渐变上 —— 背景不换、模糊档位那行也一直藏着。
+     老版本 newtab.js 的 pickBingDay 里有这一句。 */
+  await applyWallpaper('bing');
   await storeSet('wallpaper', 'bing');
   await storeSet('bingDay', day.idx);
   toast(day.idx === 0 ? '已启用今天的必应壁纸' : `已切换到 ${bingDayLabel(day)} 的壁纸`);
-  bump();
 }
 
 export async function useTodayBing(): Promise<void> {

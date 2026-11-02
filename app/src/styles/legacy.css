@@ -1234,10 +1234,10 @@ body.is-dragging .zoom-folder {
   min-width: 190px;
   padding: 5px;
   border-radius: var(--r-sheet);
-  background: var(--sheet-bg);
-  border: 1px solid var(--sheet-brd);
-  backdrop-filter: var(--sheet-blur);
-  -webkit-backdrop-filter: var(--sheet-blur);
+  /* v3.0.1：菜单压着卡片时不透 —— 和搜索框下拉同一处理，
+     把 86% 的纸色补成 100%，描边换成纸线，去掉背景模糊 */
+  background: var(--sheet-solid);
+  border: 1px solid var(--sheet-solid-brd);
   box-shadow: var(--sheet-shadow);
   color: var(--sheet-ink);
   animation: pop 0.13s var(--ease);
